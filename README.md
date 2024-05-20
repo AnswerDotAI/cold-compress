@@ -46,7 +46,7 @@ Projects inspired by gpt-fast in the community:
 [Download PyTorch nightly](https://pytorch.org/get-started/locally/)
 Install sentencepiece and huggingface_hub
 ```bash
-pip install sentencepiece huggingface_hub
+pip install sentencepiece huggingface_hub blobfile tiktoken
 ```
 
 To download llama models, go to https://huggingface.co/meta-llama/Llama-2-7b and go through steps to obtain access.

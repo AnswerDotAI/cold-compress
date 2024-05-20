@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 import json
+import os
 import re
 import shutil
 import sys
@@ -25,6 +26,11 @@ def convert_hf_checkpoint(
     checkpoint_dir: Path = Path("checkpoints/meta-Transformer/Transformer-2-7b-chat-hf"),
     model_name: Optional[str] = None,
 ) -> None:
+    out_model_path = checkpoint_dir / "model.pth"
+    if os.path.exists(out_model_path):
+        print(f"Model already exists at {out_model_path}")
+        return
+
     if model_name is None:
         model_name = checkpoint_dir.name
 
@@ -83,7 +89,7 @@ def convert_hf_checkpoint(
         original_dir = checkpoint_dir / "original"
         pattern = re.compile(r"^consolidated\.\d{2}\.pth$")
         bin_files = {bin for bin in original_dir.iterdir() if pattern.match(bin.name)}
-        
+
 
     def permute(w, n_head):
         dim = config.dim
@@ -126,13 +132,14 @@ def convert_hf_checkpoint(
     else:
         final_result = merged_result
     print(f"Saving checkpoint to {checkpoint_dir / 'model.pth'}")
-    torch.save(final_result, checkpoint_dir / "model.pth")
+    torch.save(final_result, out_model_path)
     if is_llama3:
         original_dir = checkpoint_dir / "original"
         tokenizer_model = original_dir / "tokenizer.model"
         tokenizer_model_tiktoken = checkpoint_dir / "tokenizer.model"
         print(f"Copying {tokenizer_model} to {tokenizer_model_tiktoken}")
         shutil.copy(tokenizer_model, tokenizer_model_tiktoken)
+
 
 if __name__ == '__main__':
     import argparse
@@ -145,3 +152,13 @@ if __name__ == '__main__':
         checkpoint_dir=args.checkpoint_dir,
         model_name=args.model_name,
     )
+
+    # Remove unused files
+    shutil.rmtree(args.checkpoint_dir / "original", ignore_errors=True)
+
+    # remove any files in args.checkpoint_dir not named model.pth or tokenizer.model
+    for file in args.checkpoint_dir.iterdir():
+        if file.is_file() and file.name not in ["model.pth", "tokenizer.model"]:
+            os.remove(file)
+        else:
+            shutil.rmtree(file, ignore_errors=True)
