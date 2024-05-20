@@ -1,0 +1,4 @@
+# Sliding Window with support for global (lead) tokens
+cache_strategy: ["recent_global"]
+prompt_compression_strategy: ["recent_global"]
+global_tokens: 4

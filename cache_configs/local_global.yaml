@@ -1,0 +1,7 @@
+# Alternates between local and sliding-window attention layers
+cache_strategy: ["full", "window"]
+cache_strategy_pattern: "repeat" # or tile
+max_cache_length: [1.0, 0.25]
+cache_length_pattern: "repeat" # or tile
+prompt_compression_strategy: [None, "recent_global"]
+global_tokens: 4

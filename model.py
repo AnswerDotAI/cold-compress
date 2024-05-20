@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 from dataclasses import dataclass
+from collections import defaultdict
 from typing import Optional
 
 import torch
@@ -11,11 +12,15 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 
+from attention_utils import scaled_dot_product_attention
+from cache import get_cache_constructor
+
 
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
         return n
     return n + k - (n % k)
+
 
 @dataclass
 class ModelArgs:
@@ -29,6 +34,8 @@ class ModelArgs:
     head_dim: int = 64
     rope_base: float = 10000
     norm_eps: float = 1e-5
+    attention_bias: bool = False
+    max_length: int = 4096
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -44,47 +51,115 @@ class ModelArgs:
         if name in transformer_configs:
             return cls(**transformer_configs[name])
         # fuzzy search
-        config = [config for config in transformer_configs if config in str(name).upper() or config in str(name)]
+        config = [
+            config
+            for config in transformer_configs
+            if config in str(name).upper() or config in str(name)
+        ]
 
         # We may have two or more configs matched (e.g. "7B" and "Mistral-7B"). Find the best config match,
         # take longer name (as it have more symbols matched)
         if len(config) > 1:
             config.sort(key=len, reverse=True)
-            assert len(config[0]) != len(config[1]), name # make sure only one 'best' match
+            assert len(config[0]) != len(
+                config[1]
+            ), name  # make sure only one 'best' match
 
         return cls(**transformer_configs[config[0]])
 
 
 transformer_configs = {
-    "CodeLlama-7b-Python-hf": dict(block_size=16384, vocab_size=32000, n_layer=32, dim = 4096, rope_base=1000000),
+    "CodeLlama-7b-Python-hf": dict(
+        block_size=16384, vocab_size=32000, n_layer=32, dim=4096, rope_base=1000000
+    ),
     "7B": dict(n_layer=32, n_head=32, dim=4096),
     "13B": dict(n_layer=40, n_head=40, dim=5120),
     "30B": dict(n_layer=60, n_head=52, dim=6656),
-    "34B": dict(n_layer=48, n_head=64, dim=8192, vocab_size=32000, n_local_heads=8, intermediate_size=22016, rope_base=1000000), # CodeLlama-34B-Python-hf
-    "70B": dict(n_layer=80, n_head=64, dim=8192, n_local_heads=8, intermediate_size=28672),
-    "Mistral-7B": dict(n_layer=32, n_head=32, n_local_heads=8, dim=4096, intermediate_size=14336, vocab_size=32000),
+    "34B": dict(
+        n_layer=48,
+        n_head=64,
+        dim=8192,
+        vocab_size=32000,
+        n_local_heads=8,
+        intermediate_size=22016,
+        rope_base=1000000,
+    ),  # CodeLlama-34B-Python-hf
+    "70B": dict(
+        n_layer=80, n_head=64, dim=8192, n_local_heads=8, intermediate_size=28672
+    ),
+    "Mistral-7B": dict(
+        n_layer=32,
+        n_head=32,
+        n_local_heads=8,
+        dim=4096,
+        intermediate_size=14336,
+        vocab_size=32000,
+    ),
     "stories15M": dict(n_layer=6, n_head=6, dim=288),
     "stories110M": dict(n_layer=12, n_head=12, dim=768),
-    "Llama-3-8B": dict(block_size=8192, n_layer=32, n_head=32, n_local_heads=8, dim=4096, intermediate_size=14336, vocab_size=128256),
+    "Meta-Llama-3-8B-Instruct": dict(
+        block_size=8192,
+        n_layer=32,
+        n_head=32,
+        n_local_heads=8,
+        dim=4096,
+        intermediate_size=14336,
+        vocab_size=128256,
+        rope_base=500000,
+        max_length=8192,
+    ),
+    "Meta-Llama-3-8B-Instruct-4-Layers": dict(
+        block_size=8192,
+        n_layer=4,
+        n_head=32,
+        n_local_heads=8,
+        dim=4096,
+        intermediate_size=14336,
+        vocab_size=128256,
+        rope_base=500000,
+        max_length=8192,
+    ),
+    "Qwen2-1.5B-Instruct": dict(
+        block_size=32768,
+        n_layer=28,
+        n_head=12,
+        n_local_heads=2,
+        dim=1536,
+        intermediate_size=8960,
+        vocab_size=151936,
+        rope_base=1000000,
+        attention_bias=True,
+        norm_eps=1e-6,
+        max_length=32768,
+    ),
+    "Qwen2-0.5B-Instruct": dict(
+        block_size=32768,
+        n_layer=24,
+        n_head=14,
+        n_local_heads=2,
+        dim=896,
+        intermediate_size=4864,
+        vocab_size=151936,
+        rope_base=1000000,
+        attention_bias=True,
+        norm_eps=1e-6,
+        max_length=32768,
+    ),
+    "Qwen2-7B-Instruct": dict(
+        block_size=32768,
+        n_layer=28,
+        n_head=28,
+        n_local_heads=4,
+        dim=3584,
+        intermediate_size=18944,
+        vocab_size=152064,
+        rope_base=1000000,
+        attention_bias=True,
+        norm_eps=1e-6,
+        max_length=32768,
+    ),
 }
 
-class KVCache(nn.Module):
-    def __init__(self, max_batch_size, max_seq_length, n_heads, head_dim, dtype=torch.bfloat16):
-        super().__init__()
-        cache_shape = (max_batch_size, n_heads, max_seq_length, head_dim)
-        self.register_buffer('k_cache', torch.zeros(cache_shape, dtype=dtype))
-        self.register_buffer('v_cache', torch.zeros(cache_shape, dtype=dtype))
-
-    def update(self, input_pos, k_val, v_val):
-        # input_pos: [S], k_val: [B, H, S, D]
-        assert input_pos.shape[0] == k_val.shape[2]
-
-        k_out = self.k_cache
-        v_out = self.v_cache
-        k_out[:, :, input_pos] = k_val
-        v_out[:, :, input_pos] = v_val
-
-        return k_out, v_out
 
 class Transformer(nn.Module):
     def __init__(self, config: ModelArgs) -> None:
@@ -92,42 +167,98 @@ class Transformer(nn.Module):
         self.config = config
 
         self.tok_embeddings = nn.Embedding(config.vocab_size, config.dim)
-        self.layers = nn.ModuleList(TransformerBlock(config) for _ in range(config.n_layer))
+        self.layers = nn.ModuleList(
+            TransformerBlock(config) for _ in range(config.n_layer)
+        )
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
         self.freqs_cis: Optional[Tensor] = None
-        self.mask_cache: Optional[Tensor] = None
-        self.max_batch_size = -1
-        self.max_seq_length = -1
 
-    def setup_caches(self, max_batch_size, max_seq_length):
-        if self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:
-            return
+        # Fixed for now
+        self.max_batch_size = 1
+
+    def setup_caches(self, **kwargs):
+        cache_strategy = kwargs.pop("cache_strategy")
+
         head_dim = self.config.dim // self.config.n_head
-        max_seq_length = find_multiple(max_seq_length, 8)
-        self.max_seq_length = max_seq_length
-        self.max_batch_size = max_batch_size
+
         dtype = self.output.weight.dtype
         # For quantized layers, dtype is encoded in scales
         if hasattr(self.output, "scales"):
             dtype = self.output.scales.dtype
         elif hasattr(self.output, "scales_and_zeros"):
             dtype = self.output.scales_and_zeros.dtype
-        for b in self.layers:
-            b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype)
+        for layer_idx, b in enumerate(self.layers):
+            cache_constructor, relevant_kwargs = get_cache_constructor(
+                cache_strategy=cache_strategy[layer_idx]
+            )
+            # Only pass in the kwargs we need for the cache we chose (useful especially for debugging)
+            layerwise_keys = {
+                "max_cache_length",
+                "drop_amount",
+                "recent_window",
+                "prompt_compression_strategy",
+            }
+            layer_kwargs = {
+                k: kwargs[k][layer_idx] if k in layerwise_keys else kwargs[k]
+                for k in relevant_kwargs
+            }
+            b.attention.kv_cache = cache_constructor(
+                self.max_batch_size,
+                self.config.n_local_heads,
+                head_dim,
+                dtype,
+                **layer_kwargs,
+            )
 
-        self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base, dtype)
-        self.causal_mask = torch.tril(torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool))
+        self.freqs_cis = precompute_freqs_cis(
+            self.config.block_size,
+            self.config.dim // self.config.n_head,
+            self.config.rope_base,
+            dtype,
+        )
 
-    def forward(self, idx: Tensor, input_pos: Optional[Tensor] = None) -> Tensor:
+    def reset_caches(self):
+        for layer in self.layers:
+            layer.attention.kv_cache.reset()
+
+    def get_cache_stats(self, prompt_len, gen_len):
+        stats = {}
+        final_seq_len = prompt_len + gen_len
+        avgs = defaultdict(list)
+        mem_total = 0
+        for layer_idx, layer in enumerate(self.layers):
+            stat = layer.attention.kv_cache.compute_statistics(
+                seq_len=torch.tensor(final_seq_len)
+            )
+            mem_total += stat.pop("cache_memory_gb")
+            for k, v in stat.items():
+                stats[f"{k}_{layer_idx}"] = v
+                avgs[k].append(v)
+
+        for k, v in avgs.items():
+            stats[f"{k}_avg"] = sum(v) / len(v)
+
+        stats["cache_memory_gb"] = mem_total
+        return stats
+
+    def min_cache_length(self):
+        return min([layer.attention.kv_cache.max_cache_length for layer in self.layers])
+
+    def forward(
+        self,
+        idx: Tensor,
+        input_pos: Optional[Tensor] = None,
+        mask: Optional[Tensor] = None,
+        attn_top_k: Optional[float] = 1.0,
+    ) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
-        mask = self.causal_mask[None, None, input_pos]
         freqs_cis = self.freqs_cis[input_pos]
         x = self.tok_embeddings(idx)
 
         for i, layer in enumerate(self.layers):
-            x = layer(x, input_pos, freqs_cis, mask)
+            x = layer(x, idx, input_pos, freqs_cis, mask, attn_top_k=attn_top_k)
         x = self.norm(x)
         logits = self.output(x)
         return logits
@@ -145,8 +276,23 @@ class TransformerBlock(nn.Module):
         self.ffn_norm = RMSNorm(config.dim, config.norm_eps)
         self.attention_norm = RMSNorm(config.dim, config.norm_eps)
 
-    def forward(self, x: Tensor, input_pos: Tensor, freqs_cis: Tensor, mask: Tensor) -> Tensor:
-        h = x + self.attention(self.attention_norm(x), freqs_cis, mask, input_pos)
+    def forward(
+        self,
+        x: Tensor,
+        input_ids: Tensor,
+        input_pos: Tensor,
+        freqs_cis: Tensor,
+        mask: Tensor,
+        attn_top_k: Optional[float] = 1.0,
+    ) -> Tensor:
+        h = x + self.attention(
+            self.attention_norm(x),
+            input_ids,
+            freqs_cis,
+            mask,
+            input_pos,
+            attn_top_k=attn_top_k,
+        )
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
@@ -158,7 +304,7 @@ class Attention(nn.Module):
 
         total_head_dim = (config.n_head + 2 * config.n_local_heads) * config.head_dim
         # key, query, value projections for all heads, but in a batch
-        self.wqkv = nn.Linear(config.dim, total_head_dim, bias=False)
+        self.wqkv = nn.Linear(config.dim, total_head_dim, bias=config.attention_bias)
         self.wo = nn.Linear(config.dim, config.dim, bias=False)
         self.kv_cache = None
 
@@ -175,7 +321,15 @@ class Attention(nn.Module):
             wv = state_dict.pop(prefix + "wv.weight")
             state_dict[prefix + "wqkv.weight"] = torch.cat([wq, wk, wv])
 
-    def forward(self, x: Tensor, freqs_cis: Tensor, mask: Tensor, input_pos: Optional[Tensor] = None) -> Tensor:
+    def forward(
+        self,
+        x: Tensor,
+        input_ids: Tensor,
+        freqs_cis: Tensor,
+        mask: Tensor,
+        input_pos: Optional[Tensor] = None,
+        attn_top_k: Optional[float] = 1.0,
+    ) -> Tensor:
         bsz, seqlen, _ = x.shape
 
         kv_size = self.n_local_heads * self.head_dim
@@ -190,12 +344,34 @@ class Attention(nn.Module):
 
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
-        if self.kv_cache is not None:
-            k, v = self.kv_cache.update(input_pos, k, v)
+        k, v, kv_mask, attn_callback = self.kv_cache.update(
+            input_pos, k, v, input_ids=input_ids
+        )
 
-        k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
-        v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
-        y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0)
+        k_rep = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
+        v_rep = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
+        if kv_mask is not None:
+            kv_mask = kv_mask.repeat_interleave(
+                self.n_head // self.n_local_heads, dim=1
+            )
+
+        y, attn = scaled_dot_product_attention(
+            q,
+            k_rep,
+            v_rep,
+            attn_mask=mask if mask is not None else kv_mask,
+            dropout_p=0.0,
+            attn_top_k=attn_top_k,
+            return_attn=attn_callback and attn_callback["func"] is not None,
+            **{} if attn_callback is None else attn_callback.get("kwargs", {}),
+        )
+
+        if attn_callback:
+            # Mean pool over the grouped queries (average over self.n_head // self.n_local_heads)
+            attn = attn.view(
+                bsz, self.n_local_heads, self.n_head // self.n_local_heads, seqlen, -1
+            ).mean(dim=2)
+            attn_callback["func"](input_pos, input_ids, k, v, attn)
 
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
@@ -229,10 +405,11 @@ class RMSNorm(nn.Module):
 
 
 def precompute_freqs_cis(
-    seq_len: int, n_elem: int, base: int = 10000,
-    dtype: torch.dtype = torch.bfloat16
+    seq_len: int, n_elem: int, base: int = 10000, dtype: torch.dtype = torch.bfloat16
 ) -> Tensor:
-    freqs = 1.0 / (base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem))
+    freqs = 1.0 / (
+        base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem)
+    )
     t = torch.arange(seq_len, device=freqs.device)
     freqs = torch.outer(t, freqs)
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
