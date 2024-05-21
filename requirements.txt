@@ -1,3 +1,9 @@
-torch
+blobfile
+cosette
+claudette
+datasets
+flash-attn
+huggingface_hub
 sentencepiece
 tiktoken
+vllm
