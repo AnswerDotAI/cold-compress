@@ -11,7 +11,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 if os.path.exists("/workspace/.cache/"):
     os.environ["HF_DATASETS_CACHE"] = "/workspace/.cache/huggingface/datasets"
-    os.environ["TRANSFORMERS_CACHE"] = "/workspace/.cache/huggingface/transformers"
+    os.environ["HF_TRANSFORMERS_CACHE"] = "/workspace/.cache/huggingface/transformers"
 
 assert "ANTHROPIC_API_KEY" in os.environ, "Please set the ANTHROPIC_API_KEY environment variable."
 
@@ -142,6 +142,11 @@ if __name__ == "__main__":
             )
             compressed_scores = compute_likelihoods(
                 summary, q, answers, dataset.instruction(), tokenizer, scorer,
+                max_ctx_len=args.max_ctx_len, batch_size=args.batch_size
+            )
+
+            no_rag_scores = compute_likelihoods(
+                "", q, answers, dataset.instruction(), tokenizer, scorer,
                 max_ctx_len=args.max_ctx_len, batch_size=args.batch_size
             )
 

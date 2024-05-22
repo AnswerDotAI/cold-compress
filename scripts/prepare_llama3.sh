@@ -3,7 +3,6 @@
 set -e
 
 HF=meta-llama/Meta-Llama-3-8B-Instruct
-NAME=Llama-3-8B
 TRUNC_LAYERS=4
 
 

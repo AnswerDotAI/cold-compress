@@ -14,6 +14,22 @@ This is *NOT* intended to be a "framework" or "library" - it is intended to show
 
 For an in-depth walkthrough of what's in this codebase, see this [blog post](https://pytorch.org/blog/accelerating-generative-ai-2/).
 
+## Installation
+[Download PyTorch nightly](https://pytorch.org/get-started/locally/)
+```bash
+pip install packaging
+pip install flash-attn --no-build-isolation
+pip install -r requirements.txt
+```
+
+After logging in with `huggingface-cli login`, run
+
+```bash
+bash scripts/prepare_llama3.sh
+```
+
+This will create necessary model and tokenizer files for`Meta-Llama-3-8B-Instruct` within `./checkpoints`. It will also create a smaller model for debugging purposes only, called `Meta-Llama-3-8B-Instruct-4-Layers`. This model removes all layers except for the first 4. It's quicker to load but will generate nonsense, so only use for debugging.
+
 ## Examples
 In the spirit of keeping the repo minimal, here are various examples of extensions you can make to gpt-fast as PRs.
 - [Gemma support](https://github.com/pytorch-labs/gpt-fast/pull/115)
@@ -33,25 +49,6 @@ We also supported [Mixtral 8x7B](https://mistral.ai/news/mixtral-of-experts/) wh
 Note that the benchmarks run on an 8xA100-80GB, power limited to 330W with a hybrid cube mesh topology. Note that all benchmarks are run at *batch size=1*, making the reported tokens/s numbers equivalent to "tokens/s/user". In addition, they are run with a very small prompt length (just 5 tokens).
 
 For more details about Mixtral 8x7B, please check [this page](./mixtral-moe) or this [note](https://thonking.substack.com/p/short-supporting-mixtral-in-gpt-fast).
-
-## Community
-
-Projects inspired by gpt-fast in the community:
-
-- [gpt-blazing](https://github.com/armed-gpt/gpt-blazing): applies the same performance optimization strategy to more models (e.g., baichuan2).
-- [gptfast](https://github.com/MDK8888/GPTFast): applies a subset of the performance optimizations to all Huggingface models
-- [gpt-accelera](https://github.com/Edward-Sun/gpt-accelera): extends `gpt-fast` to SFT/RM/PPO training and batched inference to optimize the throughput
-
-## Installation
-[Download PyTorch nightly](https://pytorch.org/get-started/locally/)
-```bash
-pip install -r requirements.txt
-```
-
-To download llama models, go to https://huggingface.co/meta-llama/Llama-2-7b and go through steps to obtain access.
-Then login with `huggingface-cli login`
-
-
 
 ## Downloading Weights
 Models tested/supported
