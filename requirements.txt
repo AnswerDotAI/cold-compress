@@ -4,4 +4,4 @@ datasets
 huggingface_hub
 sentencepiece
 tiktoken
-vllm
+ruff

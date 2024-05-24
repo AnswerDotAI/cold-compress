@@ -17,16 +17,20 @@ from model import Attention, MOEFeedForward, Transformer
 def _get_rank() -> int:
     return int(os.environ.get("LOCAL_RANK", "0"))
 
+
 def is_local():
     return _get_rank() == 0
+
 
 def local_break():
     if is_local():
         breakpoint()
     dist.barrier()
 
+
 def _get_world_size() -> int:
     return int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
+
 
 def maybe_init_dist() -> Optional[int]:
     try:
@@ -45,23 +49,25 @@ def maybe_init_dist() -> Optional[int]:
     dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
     return rank
 
+
 rank = _get_rank()
 world_size = _get_world_size()
+
 
 def shard(x, dim):
     assert x.size(dim=dim) % world_size == 0
     return torch.tensor_split(x, world_size, dim=dim)[rank]
 
-def _apply_tp_linear(linear: nn.Linear, style: str, weight_splits: List[int] = []) -> None:
+
+def _apply_tp_linear(
+    linear: nn.Linear, style: str, weight_splits: List[int] = []
+) -> None:
     rank = _get_rank()
     world_size = _get_world_size()
 
     # Linear's weight matrix is transposed, and is of shape
     # (linear.out_features, linear.in_features)
-    dim_lookup = {
-        "colwise": (0, "out_features"),
-        "rowwise": (1, "in_features")
-    }
+    dim_lookup = {"colwise": (0, "out_features"), "rowwise": (1, "in_features")}
     assert style in dim_lookup
     shard_dim, size_attr = dim_lookup[style]
 
@@ -73,7 +79,7 @@ def _apply_tp_linear(linear: nn.Linear, style: str, weight_splits: List[int] = [
         q = shard(q, dim)
         k = shard(k, dim)
         v = shard(v, dim)
-        return torch.cat((q,k,v), dim=dim)
+        return torch.cat((q, k, v), dim=dim)
 
     # shard
     if weight_splits:
@@ -102,13 +108,20 @@ def _apply_tp_moe_ffn(mlp: MOEFeedForward) -> None:
     mlp.cond_ffn.w2 = nn.Parameter(shard(mlp.cond_ffn.w2, 2), requires_grad=False)
 
     if hasattr(mlp.cond_ffn, "scales1"):
-        mlp.cond_ffn.scales1 = nn.Parameter(shard(mlp.cond_ffn.scales1, 1), requires_grad=False)
-        mlp.cond_ffn.scales3 = nn.Parameter(shard(mlp.cond_ffn.scales3, 1), requires_grad=False)
+        mlp.cond_ffn.scales1 = nn.Parameter(
+            shard(mlp.cond_ffn.scales1, 1), requires_grad=False
+        )
+        mlp.cond_ffn.scales3 = nn.Parameter(
+            shard(mlp.cond_ffn.scales3, 1), requires_grad=False
+        )
         mlp.cond_ffn.scales2 = nn.Parameter(mlp.cond_ffn.scales2, requires_grad=False)
 
     world_size = _get_world_size()
-    mlp.cond_ffn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-        output, "sum", list(range(world_size))))
+    mlp.cond_ffn.register_forward_hook(
+        lambda _module, _input, output: funcol.all_reduce(
+            output, "sum", list(range(world_size))
+        )
+    )
 
 
 def _apply_tp_attn(attn: Attention) -> None:
@@ -127,8 +140,11 @@ def _apply_tp_attn(attn: Attention) -> None:
     attn.head_dim = attn.dim // attn.n_head
     attn.n_local_heads = attn.n_local_heads // world_size
 
-    attn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-        output[0], "sum", list(range(world_size))))
+    attn.register_forward_hook(
+        lambda _module, _input, output: funcol.all_reduce(
+            output[0], "sum", list(range(world_size))
+        )
+    )
 
 
 def _apply_tp_Transformer(Transformer: Transformer) -> None:

@@ -14,6 +14,7 @@ from model import Transformer, ConditionalFeedForward
 
 ##### Quantization Primitives ######
 
+
 def dynamically_quantize_per_channel(x, quant_min, quant_max, target_dtype):
     # assumes symmetric quantization
     # assumes axis == 0
@@ -51,15 +52,29 @@ def dynamically_quantize_per_channel(x, quant_min, quant_max, target_dtype):
 
 ##### Weight-only int8 per-channel quantized code ######
 
+
 def replace_linear_weight_only_bit8_per_channel(module, target_dtype):
     for name, child in module.named_children():
         if isinstance(child, nn.Linear) and name != "gate":
-            setattr(module, name, WeightOnlyBit8Linear(child.in_features, child.out_features, target_dtype=target_dtype))
+            setattr(
+                module,
+                name,
+                WeightOnlyBit8Linear(
+                    child.in_features, child.out_features, target_dtype=target_dtype
+                ),
+            )
         elif isinstance(child, ConditionalFeedForward):
             num_experts, intermediate_size, dim = child.w1.shape
-            setattr(module, name, ConditionalFeedForwardBit8(num_experts, intermediate_size, dim, target_dtype=target_dtype))
+            setattr(
+                module,
+                name,
+                ConditionalFeedForwardBit8(
+                    num_experts, intermediate_size, dim, target_dtype=target_dtype
+                ),
+            )
         else:
             replace_linear_weight_only_bit8_per_channel(child, target_dtype)
+
 
 class WeightOnlyBit8QuantHandler:
     def __init__(self, mod, target_dtype):
@@ -71,7 +86,9 @@ class WeightOnlyBit8QuantHandler:
         cur_state_dict = self.mod.state_dict()
         for fqn, mod in self.mod.named_modules():
             if isinstance(mod, torch.nn.Linear) and not fqn.endswith(".gate"):
-                int8_weight, scales, _ = dynamically_quantize_per_channel(mod.weight.float(), -128, 127, self.target_dtype)
+                int8_weight, scales, _ = dynamically_quantize_per_channel(
+                    mod.weight.float(), -128, 127, self.target_dtype
+                )
                 cur_state_dict[f"{fqn}.weight"] = int8_weight
                 cur_state_dict[f"{fqn}.scales"] = scales.to(mod.weight.dtype)
             elif isinstance(mod, ConditionalFeedForward):
@@ -84,12 +101,20 @@ class WeightOnlyBit8QuantHandler:
                     bit8_weight_list = []
                     scales_list = []
                     for expert_idx in range(num_experts):
-                        bit8_weight, scales, _ = dynamically_quantize_per_channel(weight[expert_idx].float(), -128, 127, self.target_dtype)
-                        bit8_weight_list.append(bit8_weight.reshape(1, intermediate_size, dim))
+                        bit8_weight, scales, _ = dynamically_quantize_per_channel(
+                            weight[expert_idx].float(), -128, 127, self.target_dtype
+                        )
+                        bit8_weight_list.append(
+                            bit8_weight.reshape(1, intermediate_size, dim)
+                        )
                         scales_list.append(scales.reshape(1, intermediate_size))
 
-                    cur_state_dict[f"{fqn}.{weight_name}"] = torch.cat(bit8_weight_list, dim=0)
-                    cur_state_dict[f"{fqn}.{scales_name}"] = torch.cat(scales_list, dim=0)
+                    cur_state_dict[f"{fqn}.{weight_name}"] = torch.cat(
+                        bit8_weight_list, dim=0
+                    )
+                    cur_state_dict[f"{fqn}.{scales_name}"] = torch.cat(
+                        scales_list, dim=0
+                    )
 
         return cur_state_dict
 
@@ -99,19 +124,28 @@ class WeightOnlyBit8QuantHandler:
 
 
 class WeightOnlyBit8Linear(torch.nn.Module):
-    __constants__ = ['in_features', 'out_features']
+    __constants__ = ["in_features", "out_features"]
     in_features: int
     out_features: int
     weight: torch.Tensor
 
-    def __init__(self, in_features: int, out_features: int, bias: bool = True,
-                 device=None, dtype=None, target_dtype=None) -> None:
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        bias: bool = True,
+        device=None,
+        dtype=None,
+        target_dtype=None,
+    ) -> None:
         assert target_dtype is not None
-        factory_kwargs = {'device': device, 'dtype': dtype}
+        factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.register_buffer("weight", torch.empty((out_features, in_features), dtype=target_dtype))
+        self.register_buffer(
+            "weight", torch.empty((out_features, in_features), dtype=target_dtype)
+        )
         self.register_buffer("scales", torch.ones(out_features, dtype=torch.bfloat16))
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
@@ -124,69 +158,106 @@ class ConditionalFeedForwardBit8(nn.Module):
 
         self.target_dtype = target_dtype
 
-        self.register_buffer("w1", torch.empty(num_experts, intermediate_size, dim, dtype=target_dtype))
-        self.register_buffer("w2", torch.empty(num_experts, dim, intermediate_size, dtype=target_dtype))
-        self.register_buffer("w3", torch.empty(num_experts, intermediate_size, dim, dtype=target_dtype))
+        self.register_buffer(
+            "w1", torch.empty(num_experts, intermediate_size, dim, dtype=target_dtype)
+        )
+        self.register_buffer(
+            "w2", torch.empty(num_experts, dim, intermediate_size, dtype=target_dtype)
+        )
+        self.register_buffer(
+            "w3", torch.empty(num_experts, intermediate_size, dim, dtype=target_dtype)
+        )
 
-        self.register_buffer("scales1", torch.empty(num_experts, intermediate_size, dtype=torch.bfloat16))
-        self.register_buffer("scales2", torch.empty(num_experts, dim, dtype=torch.bfloat16))
-        self.register_buffer("scales3", torch.empty(num_experts, intermediate_size, dtype=torch.bfloat16))
+        self.register_buffer(
+            "scales1", torch.empty(num_experts, intermediate_size, dtype=torch.bfloat16)
+        )
+        self.register_buffer(
+            "scales2", torch.empty(num_experts, dim, dtype=torch.bfloat16)
+        )
+        self.register_buffer(
+            "scales3", torch.empty(num_experts, intermediate_size, dtype=torch.bfloat16)
+        )
 
     def forward(self, x, expert_indices):
-        w1_weights = self.w1.to(x.dtype)[expert_indices] # [T, A, D, D]
-        w3_weights = self.w3.to(x.dtype)[expert_indices] # [T, A, D, D]
+        w1_weights = self.w1.to(x.dtype)[expert_indices]  # [T, A, D, D]
+        w3_weights = self.w3.to(x.dtype)[expert_indices]  # [T, A, D, D]
         w2_weights = self.w2.to(x.dtype)[expert_indices]
-        x1 = F.silu(torch.einsum('ti,taoi -> tao', x, w1_weights) * self.scales1[expert_indices].to(x.dtype))
-        x3 = torch.einsum('ti, taoi -> tao', x, w3_weights) * self.scales3[expert_indices].to(x.dtype)
-        expert_outs = torch.einsum('tao, taio -> tai', (x1 * x3), w2_weights) * self.scales2[expert_indices].to(x.dtype)  # [T, A, D, D]
+        x1 = F.silu(
+            torch.einsum("ti,taoi -> tao", x, w1_weights)
+            * self.scales1[expert_indices].to(x.dtype)
+        )
+        x3 = torch.einsum("ti, taoi -> tao", x, w3_weights) * self.scales3[
+            expert_indices
+        ].to(x.dtype)
+        expert_outs = torch.einsum(
+            "tao, taio -> tai", (x1 * x3), w2_weights
+        ) * self.scales2[expert_indices].to(x.dtype)  # [T, A, D, D]
         return expert_outs
 
 
 def quantize(
     checkpoint_path: Path = Path("checkpoints/mistralai/Mixtral-8x7B-v0.1/model.pth"),
-    mode: str = 'int8',
-    label: str = '',
+    mode: str = "int8",
+    label: str = "",
 ) -> None:
     assert checkpoint_path.is_file(), checkpoint_path
 
-    device = 'cpu'
+    device = "cpu"
     precision = torch.bfloat16
 
     print("Loading model ...")
     t0 = time.time()
 
-    with torch.device('meta'):
+    with torch.device("meta"):
         model = Transformer.from_name(checkpoint_path.parent.name)
 
     checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
     model.load_state_dict(checkpoint, assign=True)
     model = model.to(dtype=precision, device=device)
 
-    if mode == 'int8':
-        print("Quantizing model weights for int8 weight-only symmetric per-channel quantization")
+    if mode == "int8":
+        print(
+            "Quantizing model weights for int8 weight-only symmetric per-channel quantization"
+        )
         quant_handler = WeightOnlyBit8QuantHandler(model, target_dtype=torch.int8)
         quantized_state_dict = quant_handler.create_quantized_state_dict()
 
         dir_name = checkpoint_path.parent
         base_name = checkpoint_path.name
-        new_base_name = base_name.replace('.pth', f'{label}int8.pth')
+        new_base_name = base_name.replace(".pth", f"{label}int8.pth")
 
     else:
         raise ValueError(f"Invalid quantization mode {mode} needs to be one of [int8,]")
 
     quantize_path = dir_name / new_base_name
     print(f"Writing quantized weights to {quantize_path}")
-    quantize_path.unlink(missing_ok=True) # remove existing file if one already there
+    quantize_path.unlink(missing_ok=True)  # remove existing file if one already there
     torch.save(quantized_state_dict, quantize_path)
     print(f"Quantization complete took {time.time() - t0:.02f} seconds")
     return
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='Quantize a model.')
-    parser.add_argument('--checkpoint_path', type=Path, default=Path("checkpoints/meta-llama/Llama-2-7b-chat-hf/model.pth"), help='Path to the model checkpoint to be quantized.')
-    parser.add_argument('--mode', '-q', type=str, default='int8', choices=['int8', 'int4', 'int4-gptq'], help='type of quantization to perform')
-    parser.add_argument('--label', type=str, default='_', help='label to add to output filename')
+
+    parser = argparse.ArgumentParser(description="Quantize a model.")
+    parser.add_argument(
+        "--checkpoint_path",
+        type=Path,
+        default=Path("checkpoints/meta-llama/Llama-2-7b-chat-hf/model.pth"),
+        help="Path to the model checkpoint to be quantized.",
+    )
+    parser.add_argument(
+        "--mode",
+        "-q",
+        type=str,
+        default="int8",
+        choices=["int8", "int4", "int4-gptq"],
+        help="type of quantization to perform",
+    )
+    parser.add_argument(
+        "--label", type=str, default="_", help="label to add to output filename"
+    )
 
     args = parser.parse_args()
     quantize(args.checkpoint_path, args.mode, args.label)

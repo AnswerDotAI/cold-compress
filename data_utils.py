@@ -9,7 +9,6 @@ class Benchmark(ABC):
 
     @abstractmethod
     def download(self) -> Dataset | DatasetDict:
-        print("HIIIII")
         pass
 
     def get_train(self) -> Dataset:
@@ -17,7 +16,7 @@ class Benchmark(ABC):
 
     def get_test(self) -> Dataset:
         return self.dataset["test"]
-    
+
     def get_validation(self) -> Dataset:
         return self.dataset["validation"]
 
@@ -50,7 +49,7 @@ class TriviaQA(Benchmark):
         return ex["question"]
 
     def instruction(self) -> str:
-        return "Answer the following questions based on the provided context."
+        return "Answer the following question."
 
     def context(self, ex: dict) -> str:
         """
@@ -70,21 +69,26 @@ class TriviaQA(Benchmark):
 
         if self.use_web:
             for j in range(web_n):
-                contexts.append("# " + webs["title"][j] + "\n" + webs["description"][j] + "\n" + webs["search_context"][j])
+                contexts.append(
+                    "# "
+                    + webs["title"][j]
+                    + "\n"
+                    + webs["description"][j]
+                    + "\n"
+                    + webs["search_context"][j]
+                )
 
         context_str = "\n\n".join(contexts)
 
         return context_str.strip()
 
-    def answer(self, ex: dict) -> str|list[str]:
+    def answer(self, ex: dict) -> str | list[str]:
         # TriviaQA allows for any answer within a predefined set of aliases
         assert ex["answer"]["value"] in ex["answer"]["aliases"]
         return ex["answer"]["aliases"]
 
 
-BENCHMARKS = {
-    "triviaqa": TriviaQA
-}
+BENCHMARKS = {"triviaqa": TriviaQA}
 
 
 if __name__ == "__main__":

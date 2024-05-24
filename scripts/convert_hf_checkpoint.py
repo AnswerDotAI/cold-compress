@@ -23,7 +23,9 @@ from model import ModelArgs
 @torch.inference_mode()
 def convert_hf_checkpoint(
     *,
-    checkpoint_dir: Path = Path("checkpoints/meta-Transformer/Transformer-2-7b-chat-hf"),
+    checkpoint_dir: Path = Path(
+        "checkpoints/meta-Transformer/Transformer-2-7b-chat-hf"
+    ),
     model_name: Optional[str] = None,
 ) -> None:
     out_model_path = checkpoint_dir / "model.pth"
@@ -50,8 +52,8 @@ def convert_hf_checkpoint(
         if len(bin_files) > 1:
             raise ValueError(
                 f"Multiple consolidated.NN.pth files found in {original_dir}. "
-                "Merging them into one model.pth file is not supported for Llama 3.")
-
+                "Merging them into one model.pth file is not supported for Llama 3."
+            )
 
     config = ModelArgs.from_name(model_name)
     print(f"Model config {config.__dict__}")
@@ -71,8 +73,8 @@ def convert_hf_checkpoint(
             "model.layers.{}.self_attn.k_proj.weight": "layers.{}.attention.wk.weight",
             "model.layers.{}.self_attn.v_proj.weight": "layers.{}.attention.wv.weight",
             "model.layers.{}.self_attn.o_proj.weight": "layers.{}.attention.wo.weight",
-            'model.layers.{}.self_attn.rotary_emb.inv_freq': None,
-            'model.layers.{}.mlp.gate_proj.weight': 'layers.{}.feed_forward.w1.weight',
+            "model.layers.{}.self_attn.rotary_emb.inv_freq": None,
+            "model.layers.{}.mlp.gate_proj.weight": "layers.{}.feed_forward.w1.weight",
             "model.layers.{}.mlp.up_proj.weight": "layers.{}.feed_forward.w3.weight",
             "model.layers.{}.mlp.down_proj.weight": "layers.{}.feed_forward.w2.weight",
             "model.layers.{}.input_layernorm.weight": "layers.{}.attention_norm.weight",
@@ -90,7 +92,6 @@ def convert_hf_checkpoint(
         pattern = re.compile(r"^consolidated\.\d{2}\.pth$")
         bin_files = {bin for bin in original_dir.iterdir() if pattern.match(bin.name)}
 
-
     def permute(w, n_head):
         dim = config.dim
         return (
@@ -101,14 +102,16 @@ def convert_hf_checkpoint(
 
     merged_result = {}
     for file in sorted(bin_files):
-        state_dict = torch.load(str(file), map_location="cpu", mmap=True, weights_only=True)
+        state_dict = torch.load(
+            str(file), map_location="cpu", mmap=True, weights_only=True
+        )
         merged_result.update(state_dict)
     final_result = {}
     if weight_map is not None:
         for key, value in merged_result.items():
             if "layers" in key:
-                abstract_key = re.sub(r'(\d+)', '{}', key)
-                layer_num = re.search(r'\d+', key).group(0)
+                abstract_key = re.sub(r"(\d+)", "{}", key)
+                layer_num = re.search(r"\d+", key).group(0)
                 new_key = weight_map[abstract_key]
                 if new_key is None:
                     continue
@@ -141,11 +144,16 @@ def convert_hf_checkpoint(
     torch.save(final_result, out_model_path)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='Convert HuggingFace checkpoint.')
-    parser.add_argument('--checkpoint_dir', type=Path, default=Path("checkpoints/meta-llama/llama-2-7b-chat-hf"))
-    parser.add_argument('--model_name', type=str, default=None)
+
+    parser = argparse.ArgumentParser(description="Convert HuggingFace checkpoint.")
+    parser.add_argument(
+        "--checkpoint_dir",
+        type=Path,
+        default=Path("checkpoints/meta-llama/llama-2-7b-chat-hf"),
+    )
+    parser.add_argument("--model_name", type=str, default=None)
 
     args = parser.parse_args()
     convert_hf_checkpoint(

@@ -24,6 +24,7 @@ from model import Transformer
 
 try:
     import lm_eval
+
     lm_eval_available = True
 except:
     lm_eval_available = False
@@ -31,17 +32,18 @@ except:
 from generate import _load_model, encode_tokens, model_forward
 
 if lm_eval_available:
-    try: # lm_eval version 0.4
+    try:  # lm_eval version 0.4
         from lm_eval.models.huggingface import HFLM as eval_wrapper
         from lm_eval.tasks import get_task_dict
         from lm_eval.evaluator import evaluate
-    except: #lm_eval version 0.3
+    except:  # lm_eval version 0.3
         from lm_eval import base
         from lm_eval import tasks
         from lm_eval import evaluator
-        eval_wrapper=base.BaseLM
-        get_task_dict=tasks.get_task_dict
-        evaluate=evaluator.evaluate
+
+        eval_wrapper = base.BaseLM
+        get_task_dict = tasks.get_task_dict
+        evaluate = evaluator.evaluate
 
 
 def setup_cache_padded_seq_input_pos_max_seq_length_for_prefill(
@@ -82,20 +84,22 @@ def setup_cache_padded_seq_input_pos_max_seq_length_for_prefill(
 
     return seq, input_pos, max_seq_length
 
+
 class GPTFastEvalWrapper(eval_wrapper):
     """
     A wrapper class for GPTFast, providing integration with the lm-evaluation-harness library.
     """
+
     def __init__(
         self,
         model: Transformer,
         tokenizer,
-        max_seq_length: Optional[int]=None,
+        max_seq_length: Optional[int] = None,
     ):
         super().__init__()
         self._model = model
         self._tokenizer = tokenizer
-        self._device = torch.device('cuda')
+        self._device = torch.device("cuda")
         self._max_seq_length = 2048 if max_seq_length is None else max_seq_length
 
     @property
@@ -119,8 +123,7 @@ class GPTFastEvalWrapper(eval_wrapper):
         return self._device
 
     def tok_encode(self, string: str, **kwargs):
-        encoded = encode_tokens(self._tokenizer,
-            string, bos=True, device=self._device)
+        encoded = encode_tokens(self._tokenizer, string, bos=True, device=self._device)
         # encoded is a pytorch tensor, but some internal logic in the
         # eval harness expects it to be a list instead
         # TODO: verify this for multi-batch as well
@@ -136,19 +139,20 @@ class GPTFastEvalWrapper(eval_wrapper):
         inps = inps.squeeze(0)
 
         max_new_tokens = 1
-        seq, input_pos, max_seq_length = \
+        seq, input_pos, max_seq_length = (
             setup_cache_padded_seq_input_pos_max_seq_length_for_prefill(
                 self._model,
                 inps,
                 max_new_tokens,
                 self.max_length,
             )
+        )
         x = seq.index_select(0, input_pos).view(1, -1)
         logits = model_forward(self._model, x, input_pos)
         return logits
 
     def _model_generate(self, context, max_length, eos_token_id):
-        raise Exception('unimplemented')
+        raise Exception("unimplemented")
 
 
 @torch.no_grad()
@@ -183,8 +187,8 @@ def eval(
     except:
         pass
 
-    if 'hendrycks_test' in tasks:
-        tasks.remove('hendrycks_test')
+    if "hendrycks_test" in tasks:
+        tasks.remove("hendrycks_test")
         tasks += [x for x in lm_eval.tasks.hendrycks_test.create_all_tasks().keys()]
     task_dict = get_task_dict(tasks)
 
@@ -197,7 +201,9 @@ def eval(
 
 
 def main(
-    checkpoint_path: Path = Path("checkpoints/meta-llama/Llama-2-7b-chat-hf/lit_model.pth"),
+    checkpoint_path: Path = Path(
+        "checkpoints/meta-llama/Llama-2-7b-chat-hf/lit_model.pth"
+    ),
     compile: bool = False,
     tasks: list = ["hellaswag"],
     limit: Optional[int] = None,
@@ -219,7 +225,7 @@ def main(
     tokenizer_path = checkpoint_path.parent / "tokenizer.model"
     assert tokenizer_path.is_file(), str(tokenizer_path)
 
-    device = 'cuda'
+    device = "cuda"
     precision = torch.bfloat16
 
     print("Loading model ...")
@@ -237,7 +243,9 @@ def main(
 
     if compile:
         global model_forward
-        model_forward = torch.compile(model_forward,  mode="reduce-overhead", dynamic=True, fullgraph=True)
+        model_forward = torch.compile(
+            model_forward, mode="reduce-overhead", dynamic=True, fullgraph=True
+        )
         torch._inductor.config.coordinate_descent_tuning = True
 
     t1 = time.time()
@@ -254,17 +262,42 @@ def main(
         print(f"{task}: {res}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='Your CLI description.')
 
-    parser.add_argument('--checkpoint_path', type=Path, default=Path("checkpoints/meta-llama/Llama-2-7b-chat-hf/lit_model.pth"), help='Model checkpoint path.')
-    parser.add_argument('--compile', action='store_true', help='Whether to compile the model.')
-    parser.add_argument('--tasks', nargs='+', type=str, default=["hellaswag"], help='list of lm-eluther tasks to evaluate usage: --tasks task1 task2')
-    parser.add_argument('--limit', type=int, default=None, help='number of samples to evalulate')
-    parser.add_argument('--max_seq_length', type=int, default=None, help='maximum length sequence to evaluate')
+    parser = argparse.ArgumentParser(description="Your CLI description.")
+
+    parser.add_argument(
+        "--checkpoint_path",
+        type=Path,
+        default=Path("checkpoints/meta-llama/Llama-2-7b-chat-hf/lit_model.pth"),
+        help="Model checkpoint path.",
+    )
+    parser.add_argument(
+        "--compile", action="store_true", help="Whether to compile the model."
+    )
+    parser.add_argument(
+        "--tasks",
+        nargs="+",
+        type=str,
+        default=["hellaswag"],
+        help="list of lm-eluther tasks to evaluate usage: --tasks task1 task2",
+    )
+    parser.add_argument(
+        "--limit", type=int, default=None, help="number of samples to evalulate"
+    )
+    parser.add_argument(
+        "--max_seq_length",
+        type=int,
+        default=None,
+        help="maximum length sequence to evaluate",
+    )
 
     args = parser.parse_args()
     main(
-        Path(args.checkpoint_path), args.compile, args.tasks, args.limit, args.max_seq_length,
+        Path(args.checkpoint_path),
+        args.compile,
+        args.tasks,
+        args.limit,
+        args.max_seq_length,
     )

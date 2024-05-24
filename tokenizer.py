@@ -5,6 +5,7 @@ from tiktoken.load import load_tiktoken_bpe
 from pathlib import Path
 from typing import Dict
 
+
 class TokenizerInterface:
     def __init__(self, model_path):
         self.model_path = model_path
@@ -20,6 +21,7 @@ class TokenizerInterface:
 
     def eos_id(self):
         raise NotImplementedError("This method should be overridden by subclasses.")
+
 
 class SentencePieceWrapper(TokenizerInterface):
     def __init__(self, model_path):
@@ -37,6 +39,7 @@ class SentencePieceWrapper(TokenizerInterface):
 
     def eos_id(self):
         return self.processor.eos_id()
+
 
 class TiktokenWrapper(TokenizerInterface):
     """
@@ -94,10 +97,11 @@ class TiktokenWrapper(TokenizerInterface):
     def eos_id(self):
         return self._eos_id
 
+
 def get_tokenizer(tokenizer_model_path, model_name):
     """
     Factory function to get the appropriate tokenizer based on the model name.
-    
+
     Args:
     - tokenizer_model_path (str): The file path to the tokenizer model.
     - model_name (str): The name of the model, used to determine the tokenizer type.
