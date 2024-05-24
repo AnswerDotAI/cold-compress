@@ -34,7 +34,17 @@ wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
 from model import Transformer
-from tokenizer import get_tokenizer
+from tokenizer import Llama3ChatFormat, get_tokenizer
+
+
+MOCK_LONG_PROMPT = """Consider a scenario where a city is planning to transition to a smart city infrastructure.
+The plan includes implementing smart traffic management systems, energy-efficient street lighting, and real-time monitoring of public utilities.
+Additionally, the city aims to enhance public safety through advanced surveillance and emergency response systems.
+As an urban planner, discuss the potential benefits, challenges, and necessary steps for successful implementation.
+Specifically, address how these changes can improve city life, the technological and financial hurdles that may arise, and the steps needed to ensure data privacy and community support.
+
+Be verbose and detailed.
+"""
 
 
 def multinomial_sample_one_no_sync(
@@ -65,7 +75,14 @@ def prefill(
     model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs
 ) -> torch.Tensor:
     # input_pos: [B, S]
-    logits = model(x, input_pos)
+    # Fix GPU
+    causal_mask = (
+        torch.tril(torch.ones(len(input_pos), len(input_pos), dtype=torch.bool))
+        .unsqueeze(0)
+        .unsqueeze(0)
+        .to(x.device)
+    )
+    logits = model(x, input_pos, mask=causal_mask)
     return sample(logits, **sampling_kwargs)[0]
 
 
@@ -83,6 +100,7 @@ def decode_n_tokens(
     cur_token: torch.Tensor,
     input_pos: torch.Tensor,
     num_new_tokens: int,
+    terminator_ids: Optional[list] = [],
     callback=lambda _: _,
     **sampling_kwargs,
 ):
@@ -94,6 +112,10 @@ def decode_n_tokens(
             next_token, next_prob = decode_one_token(
                 model, cur_token, input_pos, **sampling_kwargs
             )
+
+            if terminator_ids and next_token in terminator_ids:
+                break
+
             input_pos += 1
             new_tokens.append(next_token.clone())
             callback(new_tokens[-1])
@@ -177,7 +199,10 @@ def generate(
     interactive: bool,
     draft_model: Transformer,
     speculate_k: Optional[int] = 8,
+    max_cache_length: Optional[float] = 1.0,
     callback=lambda x: x,
+    terminator_ids: Optional[list] = [],
+    cache_kwargs: dict = {"max_cache_length": 1.0},
     **sampling_kwargs,
 ) -> torch.Tensor:
     """
@@ -198,13 +223,27 @@ def generate(
     max_seq_length = (
         max_seq_length + speculate_k + 1 if is_speculative else max_seq_length
     )
-    with torch.device(device):
-        model.setup_caches(max_batch_size=1, max_seq_length=max_seq_length)
-        if is_speculative and draft_model is not model:
-            draft_model.setup_caches(max_batch_size=1, max_seq_length=max_seq_length)
 
-    # create an empty tensor of the expected final shape and fill in the current tokens
-    empty = torch.empty(T_new, dtype=dtype, device=device)
+    # Update max_cache_length if expressed as a fraction
+    max_cache_length = cache_kwargs["max_cache_length"]
+    if 0 < max_cache_length <= 1:
+        max_cache_length = round(max_seq_length * max_cache_length)
+    else:
+        assert int(max_cache_length) == max_cache_length
+        max_cache_length = int(max_cache_length)
+        assert (
+            max_cache_length < max_seq_length
+        ), f"Specified max cache length ({max_cache_length}) must be less than max_seq_length ({max_seq_length})."
+    cache_kwargs["max_cache_length"] = max_cache_length
+
+    with torch.device(device):
+        model.setup_caches(max_batch_size=1, **cache_kwargs)
+        if is_speculative and draft_model is not model:
+            draft_model.setup_caches(max_batch_size=1, **cache_kwargs)
+
+    # create an empty tensor (all -1) of the expected final shape and fill in the current tokens
+    # GPT-Fast had this as empty but the values of empty are non-deterministic
+    empty = torch.full((T_new,), -1, dtype=dtype, device=device)
     empty[:T] = prompt
     seq = empty
     input_pos = torch.arange(0, T, device=device)
@@ -242,9 +281,14 @@ def generate(
             input_pos,
             max_new_tokens - 1,
             callback=callback,
+            terminator_ids=terminator_ids,
             **sampling_kwargs,
         )
-        seq[T + 1 :] = torch.cat(generated_tokens)
+        seq[T + 1 : T + 1 + len(generated_tokens)] = torch.cat(generated_tokens)
+
+    # Truncate seq to first instance of -1 if -1 is present
+    if -1 in seq:
+        seq = seq[: torch.where(seq == -1)[0][0]]
 
     generate_stats = {"accept_counts": accept_counts}
     return seq, generate_stats
@@ -325,6 +369,7 @@ def main(
     draft_checkpoint_path: Optional[Path] = None,
     speculate_k: int = 5,
     device=default_device,
+    cache_kwargs: dict = {},
 ) -> None:
     """Generates text samples based on a pre-trained Transformer model and tokenizer."""
     assert checkpoint_path.is_file(), checkpoint_path
@@ -345,7 +390,10 @@ def main(
     print(f"Using device={device}")
     precision = torch.bfloat16
     is_speculative = draft_checkpoint_path is not None
-    is_chat = "chat" in str(checkpoint_path)
+    is_chat = (
+        "chat" in str(checkpoint_path).lower()
+        or "instruct" in str(checkpoint_path).lower()
+    )
 
     print("Loading model ...")
     t0 = time.time()
@@ -361,11 +409,19 @@ def main(
 
     tokenizer = get_tokenizer(tokenizer_path, checkpoint_path)
 
-    encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
+    if is_chat:
+        tokens = Llama3ChatFormat(tokenizer).encode_prompt(prompt)
+        encoded = torch.tensor(tokens, dtype=torch.int, device=device)
+    else:
+        encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
     prompt_length = encoded.size(0)
+
+    terminator_ids = [tokenizer.eos_id(), tokenizer.special_tokens["<|eot_id|>"]]
 
     torch.manual_seed(1234)
     model_size = _get_model_size(model)
+    print(f"{model_size / 1e9:.02f} billion parameters in model.")
+
     if compile:
         if is_speculative and use_tp:  # and ("cuda" in device):
             torch._inductor.config.triton.cudagraph_trees = (
@@ -435,9 +491,12 @@ def main(
                 draft_model=draft_model,
                 speculate_k=speculate_k,
                 interactive=interactive,
+                max_cache_length=args.max_cache_length,
                 callback=callback,
                 temperature=temperature,
                 top_k=top_k,
+                terminator_ids=terminator_ids,
+                cache_kwargs=cache_kwargs,
             )
             aggregate_metrics["accept_counts"].append(metrics["accept_counts"])
         if i == -1:
@@ -451,6 +510,7 @@ def main(
         device_sync(device=device)  # MKG
         t = time.perf_counter() - t0
 
+        y_str = tokenizer.decode(y.tolist())
         if not interactive:
             print(tokenizer.decode(y.tolist()))
         else:
@@ -461,6 +521,7 @@ def main(
         print(
             f"Time for inference {i + 1}: {t:.02f} sec total, {tokens_sec:.02f} tokens/sec"
         )
+        print(f"Tokens generated: {tokens_generated}")
         print(f"Bandwidth achieved: {model_size * tokens_sec / 1e9:.02f} GB/s")
     print("==========")
     if is_speculative:
@@ -483,8 +544,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Your CLI description.")
 
     parser.add_argument(
-        "--prompt", type=str, default="Hello, my name is", help="Input prompt."
+        "--prompt", type=str, default=MOCK_LONG_PROMPT, help="Input prompt."
     )
+
     parser.add_argument(
         "--interactive",
         action="store_true",
@@ -492,7 +554,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_samples", type=int, default=1, help="Number of samples.")
     parser.add_argument(
-        "--max_new_tokens", type=int, default=200, help="Maximum number of new tokens."
+        "--max_new_tokens", type=int, default=512, help="Maximum number of new tokens."
     )
     parser.add_argument("--top_k", type=int, default=200, help="Top-k for sampling.")
     parser.add_argument(
@@ -501,7 +563,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoint_path",
         type=Path,
-        default=Path("checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth"),
+        default=Path(__file__).resolve().parent
+        / "checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth",
         help="Model checkpoint path.",
     )
     parser.add_argument(
@@ -526,7 +589,38 @@ if __name__ == "__main__":
         "--device", type=str, default=default_device, help="Device to use"
     )
 
+    # KV-Cache Kwargs
+    parser.add_argument(
+        "--max_cache_length",
+        type=float,
+        default=1.0,
+        help="Cache size. If 0 < x <= 1, it is percent of |prompt| + max new tokens. Otherwise, if > 1, its the maximum size.",
+    )
+    parser.add_argument("--cache_strategy", default="full", choices=["full", "window"])
+    # Optional Cache Kwargs depending on cache_strategy
+    parser.add_argument(
+        "--global_tokens",
+        default=4,
+        type=int,
+        help="The number of initial tokens to always include in the KV-Cache.  \
+        If using window strategy, the actual window becomes max_cache_length - global_tokens.",
+    )
+
     args = parser.parse_args()
+
+    if args.cache_strategy == "full":
+        # Full implies no compression, which means --max_cache_length = 1.0 (same size as prompt + max_new_tokens)
+        assert (
+            args.max_cache_length == 1.0
+        ), "Full cache strategy only supports max_cache_length=1.0."
+
+    # TODO Nicer way to bundle these?
+    cache_kwargs = {
+        "max_cache_length": args.max_cache_length,
+        "cache_strategy": args.cache_strategy,
+        "global_tokens": args.global_tokens,
+    }
+
     main(
         args.prompt,
         args.interactive,
@@ -541,4 +635,5 @@ if __name__ == "__main__":
         args.draft_checkpoint_path,
         args.speculate_k,
         args.device,
+        cache_kwargs,
     )
