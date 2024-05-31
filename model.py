@@ -5,12 +5,12 @@
 # LICENSE file in the root directory of this source tree.
 from dataclasses import dataclass
 from typing import Optional
-
 import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 
+from attention_utils import scaled_dot_product_attention
 from cache import get_cache_constructor
 
 
@@ -243,21 +243,24 @@ class Attention(nn.Module):
 
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
-        if self.kv_cache is not None:
-            cache_k, cache_v, cache_mask = self.kv_cache.update(input_pos, k, v)
+        is_causal = self.kv_cache.is_prefill()
+        return_attn = self.kv_cache.return_attention()
 
-        # If we are in the prefill stage, we use the provided prompt kv-pairs
-        if not self.kv_cache.is_prefill():
+        cache_k, cache_v = self.kv_cache.update(input_pos, k, v)
+        # If we are in the prefill stage, we use the prompt kv-pairs
+        if not is_causal:  # Otherwise, we use the cached kv-pairs
             k = cache_k
             v = cache_v
-            # We also need to ask the cache for its dynamic mask which changes based on updates and possibly evictions
-            # TODO - why is this not always loaded on GPU?
-            mask = cache_mask.to(k.device)
 
         k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
-        y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0)
 
+        y, attn = scaled_dot_product_attention(q, k, v, is_causal=is_causal, attn_mask=mask, dropout_p=0.0, return_attn=return_attn)
+
+        if attn is not None:
+            # Mean pool over the grouped queries (average over self.n_head // self.n_local_heads)
+            attn = attn.view(bsz, self.n_local_heads, self.n_head // self.n_local_heads, seqlen, seqlen).mean(dim=2)
+            self.kv_cache.update_attn(input_pos, attn)
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
         y = self.wo(y)

@@ -75,14 +75,7 @@ def prefill(
     model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs
 ) -> torch.Tensor:
     # input_pos: [B, S]
-    # Fix GPU
-    causal_mask = (
-        torch.tril(torch.ones(len(input_pos), len(input_pos), dtype=torch.bool))
-        .unsqueeze(0)
-        .unsqueeze(0)
-        .to(x.device)
-    )
-    logits = model(x, input_pos, mask=causal_mask)
+    logits = model(x, input_pos)
     return sample(logits, **sampling_kwargs)[0]
 
 
