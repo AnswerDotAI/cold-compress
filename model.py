@@ -243,23 +243,28 @@ class Attention(nn.Module):
 
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
-        is_causal = self.kv_cache.is_prefill()
+        is_prefill = self.kv_cache.is_prefill()
         return_attn = self.kv_cache.return_attention()
 
         cache_k, cache_v = self.kv_cache.update(input_pos, k, v)
         # If we are in the prefill stage, we use the prompt kv-pairs
-        if not is_causal:  # Otherwise, we use the cached kv-pairs
+        if not is_prefill:  # Otherwise, we use the cached kv-pairs
             k = cache_k
             v = cache_v
+
+            # The KV matrices returned from cache are truncated to only include filled tokens
+            # Thus, no masking is needed.
+            assert mask is None
 
         k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
 
-        y, attn = scaled_dot_product_attention(q, k, v, is_causal=is_causal, attn_mask=mask, dropout_p=0.0, return_attn=return_attn)
+        return_attn = True
+        y, attn = scaled_dot_product_attention(q, k, v, is_causal=False, attn_mask=mask, dropout_p=0.0, return_attn=return_attn)
 
         if attn is not None:
             # Mean pool over the grouped queries (average over self.n_head // self.n_local_heads)
-            attn = attn.view(bsz, self.n_local_heads, self.n_head // self.n_local_heads, seqlen, seqlen).mean(dim=2)
+            attn = attn.view(bsz, self.n_local_heads, self.n_head // self.n_local_heads, seqlen, -1).mean(dim=2)
             self.kv_cache.update_attn(input_pos, attn)
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 

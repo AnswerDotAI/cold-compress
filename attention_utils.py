@@ -12,22 +12,23 @@ def scaled_dot_product_attention(
         return F.scaled_dot_product_attention(
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
         ), None
-    L, S = query.size(-2), key.size(-2)
+    B, L, S = query.size(0), query.size(-2), key.size(-2)
     scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
-    attn_bias = torch.zeros(L, S, dtype=query.dtype)
-    if is_causal:
-        assert attn_mask is None
-        temp_mask = torch.ones(L, S, dtype=torch.bool).tril(diagonal=0)
-        attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
-        attn_bias.to(query.dtype)
+    attn_weight = query @ key.transpose(-2, -1) * scale_factor
 
-    if attn_mask is not None:
+    needs_masking = is_causal or attn_mask is not None
+    if needs_masking:
+        assert not (attn_mask is not None and is_causal), "Should only be passing in attn_mask or is_causal=True."
+        attn_bias = torch.zeros(B, 1, L, S, dtype=query.dtype, device=query.device)
+        if is_causal:
+            assert attn_mask is None
+            attn_mask = torch.ones(L, S, dtype=torch.bool, device=query.device).tril(diagonal=0).unsqueeze(0).unsqueeze(0)
         if attn_mask.dtype == torch.bool:
             attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
         else:
             attn_bias += attn_mask
-    attn_weight = query @ key.transpose(-2, -1) * scale_factor
-    attn_weight += attn_bias
+        attn_weight += attn_bias.to(attn_weight.device)
+
     attn_weight = torch.softmax(attn_weight, dim=-1)
     attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
     return attn_weight @ value, attn_weight

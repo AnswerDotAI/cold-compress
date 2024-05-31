@@ -99,6 +99,12 @@ class KVCache(ABC, nn.Module):
         self.k_cache[:, :, fill_indices, :] = k_val
         self.v_cache[:, :, fill_indices, :] = v_val
 
+    def update_attn(self, input_pos, attn):
+        if self.return_attention() and not hasattr(self, "_update_attn"):
+            raise Exception("If your KVCache subclass requests attention weights, it must implement an _update_attn function.")
+
+        self._update_attn(input_pos, attn)
+
 
 class KVCacheFull(KVCache):
     def __init__(
@@ -185,6 +191,10 @@ class KVCacheHeavyHitters(KVCache):
         self.global_filled = self.global_tokens == 0
 
     def _update(self, input_pos, k_val, v_val):
+        pass
+
+    def _update_attn(self, input_pos, attn):
+        # TODO
         pass
 
     def return_attention(self):

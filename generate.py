@@ -75,7 +75,15 @@ def prefill(
     model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs
 ) -> torch.Tensor:
     # input_pos: [B, S]
-    logits = model(x, input_pos)
+
+    # Initialize causal mask outside of forward pass to avoid having to recreate it within each self-attention layer.
+    causal_mask = (
+        torch.tril(torch.ones(len(input_pos), len(input_pos), dtype=torch.bool))
+        .unsqueeze(0)
+        .unsqueeze(0)
+        .to(x.device)
+    )
+    logits = model(x, input_pos, mask=causal_mask)
     return sample(logits, **sampling_kwargs)[0]
 
 
