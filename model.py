@@ -264,8 +264,6 @@ class Attention(nn.Module):
         if attn is not None:
             # Mean pool over the grouped queries (average over self.n_head // self.n_local_heads)
             attn = attn.view(bsz, self.n_local_heads, self.n_head // self.n_local_heads, seqlen, -1).mean(dim=2)
-            # TODO We store the attention on CPU --> is this better than computing max size of history and initializing on GPU?
-            attn = attn.cpu()
             self.kv_cache.update_attn(attn, mask)
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 

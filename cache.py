@@ -187,15 +187,18 @@ class KVCacheWindow(KVCache):
 
 
 class KVCacheHeavyHitters(KVCache):
-    relevant_kwargs = ["max_cache_length", "global_tokens", "history_att_window"]
+    relevant_kwargs = ["max_cache_length", "global_tokens", "history_attn_window"]
 
     def __init__(
         self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
     ):
         super().__init__(max_batch_size, n_heads, head_dim, dtype, **kwargs)
 
-        # TODO Should we use static tensors for this?
-        self.att_history = [[[] for _ in range(n_heads)] for _ in range(self.max_cache_length)]
+        self.attn_ignore_value = 0.0  # This is used to ignore the attention values in the history attention window
+        self.register_buffer("attn_history", torch.full((max_batch_size, n_heads, self.max_cache_length, self.history_attn_window), self.attn_ignore_value, dtype=dtype))
+        # Record how many attention values we've inserted into attn_history for each key-head pair.
+        # This will tell us where to over-write the oldest historical attention value.
+        self.register_buffer("attn_cts", torch.zeros((max_batch_size, n_heads, self.max_cache_length), dtype=torch.int))
 
         # This turns True when the global tokens are fully filled
         self.global_filled = self.global_tokens == 0
@@ -204,7 +207,7 @@ class KVCacheHeavyHitters(KVCache):
         # Prefill case: If prompt > window, we don't have a strategy yet to chop off early positions
         if input_pos.shape[0] > self.max_cache_length:
             raise Exception("Heavy Hitters cache does not yet support prefilling with a prompt longer than the max_cache_length.")
-        
+
         num_in_cache = min(self.insertions, self.max_cache_length)
 
         cand_new_num = num_in_cache + input_pos.shape[0]
@@ -218,50 +221,70 @@ class KVCacheHeavyHitters(KVCache):
         elif cand_new_num == self.max_cache_length + 1:
             # Where n is the number of keys in the cache at the time the attention was computed
             # Evictions are specific to the head, so we need to compute this for each head
-            for head_idx in range(k_val.shape[1]):
-                # Compute the number of times each token in the cache was attended to with a probability less than 1/n
-                unimportances = [
-                    len([att for att in self.att_history[i][head_idx] if att[0] < 1 / att[1]]) for i in range(num_in_cache)
-                ]
+            unimportant_cts = (self.attn_history < 0).sum(dim=-1)
 
-                # Find the index of the least attended to token
-                fill_indices = list(sorted(np.argsort(unimportances)[-input_pos.shape[0]:]))
-                # Evict the least attended to token
-                self.fill(fill_indices=fill_indices, input_pos=input_pos, k_val=k_val[:, head_idx:head_idx+1, :], v_val=v_val[:, head_idx:head_idx+1, :], head_idx=head_idx)
-            unimportances = [
-                len([att for att in self.att_history[i] if att[0] < 1 / att[1]]) for i in range(num_in_cache)
-            ]
+            # For each head, find the key with the most attended
+            _, max_k_indices = unimportant_cts.topk(input_pos.shape[0], dim=2)
 
-            fill_indices = list(sorted(np.argsort(unimportances)[-input_pos.shape[0]:]))
-            self.fill(fill_indices=fill_indices, input_pos=input_pos, k_val=k_val, v_val=v_val)
+            # Sort the indices in ascending order
+            max_k_indices, _ = max_k_indices.squeeze(0).sort()
+
+            if torch.min(max_k_indices) == torch.max(max_k_indices):
+                # If the min_k_indices and max_k_indices are the same, we can bulk assign
+                self.fill(fill_indices=max_k_indices[0], input_pos=input_pos, k_val=k_val, v_val=v_val)
+            else:
+                for head_idx in range(k_val.shape[1]):
+                    self.fill(fill_indices=max_k_indices[head_idx], input_pos=input_pos, k_val=k_val[:, head_idx:head_idx + 1], v_val=v_val[:, head_idx:head_idx + 1], head_idx=head_idx)
         else:
             # TODO better handling of this ... in general we input_pos.shape[0] is always 1 after initial prefill
             raise Exception("Cache is overfilled. This should not happen since input_pos.shape[0] should always be 1.")
 
     def _update_attn(self, attn: torch.tensor, mask: torch.Tensor = None):
         _, _, qn, kn = attn.shape
+        history = self.attn_history.shape[-1]
+
+        # Per Query, we need to know how many keys were attended to
+        attn_denom = mask.sum(dim=-1) if mask is not None else kn
+        uniform_attn = 1 / attn_denom
+        if type(uniform_attn) == torch.Tensor:
+            uniform_attn = uniform_attn.unsqueeze(-1)
+
+        # Compute delta of actual attention over a uniform distribution
+        attn -= uniform_attn
+
+        if mask is None:
+            num_attns_per_kv = [qn for _ in range(kn)]
+        else:
+            num_attns_per_kv = mask.sum(dim=2).squeeze()
 
         # We should only be computing attention over the non-empty part of the cache
         assert kn == min(self.max_cache_length, self.insertions)
-        for qi in range(qn):
-            num_attended = int(mask[0, 0, qi, :].sum().item()) if mask is not None else kn
-            for ki in range(num_attended):
-                attns = attn[0, :, qi, ki]
-                for head_idx, prob in enumerate(attns):
-                    # Add the attention prob as well as the denom of the softmax used to compute the prob
-                    self.att_history[ki][head_idx].append((prob.item(), num_attended))
-                    # If it's beyond the historical window, remove the oldest value
-                    if len(self.att_history[ki][head_idx]) > self.history_att_window:
-                        self.att_history[ki][head_idx].pop(0)
+
+        # For each key-head pair, we need to insert the attention values into the cached attention history
+        # Because of head-specific evictions, different heads for the same K position might represent
+        # Different physical tokens with different attention histories. Thus, we need to lookup
+        # The right self.attn_cts index for each key-head pair.
+        for ki in range(kn):
+            k_attns = attn[:, :, :num_attns_per_kv[ki], ki]
+            start = (self.attn_cts[:, :, ki] % history).squeeze(0)
+            end = start + k_attns.shape[-1]
+            assert torch.max(end) <= history, "During prefill, attn_cts=0. During generation, the query should be size 1 (k_attns.shape[-1]). As such, end will be at most history."
+            if torch.min(start) == torch.max(start): # We can bulk assign
+                self.attn_history[:, :, ki, start[0]:end[0]] = k_attns
+            else:
+                # If the start and end are different, we need to assign each head individually
+                # This will be the case when different tokens are stored in different heads for same position in cache
+                for head_idx in range(k_attns.shape[1]):
+                    self.attn_history[:, head_idx, ki, start[head_idx]:end[head_idx]] = k_attns[:, head_idx, :]
+
+        # Update the counts
+        self.attn_cts[:, :, :qn] += num_attns_per_kv[0] if type(num_attns_per_kv) == list else num_attns_per_kv
     
-    def fill(self, fill_indices, input_pos, k_val, v_val):
-        super().fill(fill_indices, input_pos, k_val, v_val)
+    def fill(self, fill_indices, input_pos, k_val, v_val, head_idx=None):
+        super().fill(fill_indices, input_pos, k_val, v_val, head_idx=head_idx)
 
-        num_heads = k_val.shape[1]
-
-        # Reset the history at these slots
-        for idx in fill_indices:
-            self.att_history[idx] = [[] for _ in range(num_heads)]
+        # Reset attention history counts for these newly filled positions
+        self.attn_cts[:, head_idx or slice(None), fill_indices] = self.attn_ignore_value
 
     def return_attention(self):
         return True

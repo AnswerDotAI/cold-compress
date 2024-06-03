@@ -607,7 +607,7 @@ if __name__ == "__main__":
         If using window strategy, the actual window becomes max_cache_length - global_tokens.",
     )
     parser.add_argument(
-        "--history_att_window",
+        "--history_attn_window",
         default=400,
         type=int,
         help="The number of recently generated tokens to consider when identifying 'Heavy Hitters' in the KV-Cache.",
@@ -626,7 +626,7 @@ if __name__ == "__main__":
         "cache_strategy": args.cache_strategy,
         "max_cache_length": args.max_cache_length,
         "global_tokens": args.global_tokens,
-        "history_att_window": args.history_att_window
+        "history_attn_window": args.history_attn_window
     }
 
     main(
