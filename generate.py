@@ -597,7 +597,7 @@ if __name__ == "__main__":
         default=1.0,
         help="Cache size. If 0 < x <= 1, it is percent of |prompt| + max new tokens. Otherwise, if > 1, its the maximum size.",
     )
-    parser.add_argument("--cache_strategy", default="full", choices=["full", "window"])
+    parser.add_argument("--cache_strategy", default="full", choices=["full", "window", "heavy_hitters"])
     # Optional Cache Kwargs depending on cache_strategy
     parser.add_argument(
         "--global_tokens",
@@ -605,6 +605,12 @@ if __name__ == "__main__":
         type=int,
         help="The number of initial tokens to always include in the KV-Cache.  \
         If using window strategy, the actual window becomes max_cache_length - global_tokens.",
+    )
+    parser.add_argument(
+        "--history_att_window",
+        default=400,
+        type=int,
+        help="The number of recently generated tokens to consider when identifying 'Heavy Hitters' in the KV-Cache.",
     )
 
     args = parser.parse_args()
@@ -617,9 +623,10 @@ if __name__ == "__main__":
 
     # TODO Nicer way to bundle these?
     cache_kwargs = {
-        "max_cache_length": args.max_cache_length,
         "cache_strategy": args.cache_strategy,
+        "max_cache_length": args.max_cache_length,
         "global_tokens": args.global_tokens,
+        "history_att_window": args.history_att_window
     }
 
     main(

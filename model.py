@@ -259,13 +259,14 @@ class Attention(nn.Module):
         k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
 
-        return_attn = True
         y, attn = scaled_dot_product_attention(q, k, v, is_causal=False, attn_mask=mask, dropout_p=0.0, return_attn=return_attn)
 
         if attn is not None:
             # Mean pool over the grouped queries (average over self.n_head // self.n_local_heads)
             attn = attn.view(bsz, self.n_local_heads, self.n_head // self.n_local_heads, seqlen, -1).mean(dim=2)
-            self.kv_cache.update_attn(input_pos, attn)
+            # TODO We store the attention on CPU --> is this better than computing max size of history and initializing on GPU?
+            attn = attn.cpu()
+            self.kv_cache.update_attn(attn, mask)
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
         y = self.wo(y)
