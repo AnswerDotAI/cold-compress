@@ -1,9 +1,16 @@
+import itertools
 import os
 import sentencepiece as spm
 import tiktoken
 from tiktoken.load import load_tiktoken_bpe
 from pathlib import Path
-from typing import Dict
+from typing import (
+    Dict,
+    List,
+    Literal,
+    Sequence,
+    TypedDict,
+)
 
 
 class TokenizerInterface:
@@ -113,3 +120,41 @@ def get_tokenizer(tokenizer_model_path, model_name):
         return TiktokenWrapper(tokenizer_model_path)
     else:
         return SentencePieceWrapper(tokenizer_model_path)
+
+
+Role = Literal["system", "user", "assistant"]
+
+
+class Message(TypedDict):
+    role: Role
+    content: str
+
+
+class Llama3ChatFormat:
+    def __init__(self, tokenizer: TokenizerInterface):
+        self.tokenizer = tokenizer
+
+    def encode_header(self, message: Message) -> List[int]:
+        return [
+            self.tokenizer.special_tokens["<|start_header_id|>"],
+            *self.tokenizer.encode(message["role"]),
+            self.tokenizer.special_tokens["<|end_header_id|>"],
+            *self.tokenizer.encode("\n\n"),
+        ]
+
+    def encode_prompt(self, prompt: str):
+        return self.encode_dialog_prompt([{"role": "user", "content": prompt}])
+
+    def encode_message(self, message: Message) -> List[int]:
+        tokens = self.encode_header(message)
+        tokens.extend(self.tokenizer.encode(message["content"].strip()))
+        tokens.append(self.tokenizer.special_tokens["<|eot_id|>"])
+        return tokens
+
+    def encode_dialog_prompt(self, dialog: List[Message]) -> List[int]:
+        return [
+            self.tokenizer.special_tokens["<|begin_of_text|>"],
+            *list(itertools.chain(*map(self.encode_message, dialog))),
+            # Add the start of an assistant message for the model to complete.
+            *self.encode_header({"role": "assistant", "content": ""}),
+        ]

@@ -11,6 +11,8 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 
+from cache import get_cache_constructor
+
 
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
@@ -112,27 +114,6 @@ transformer_configs = {
 }
 
 
-class KVCache(nn.Module):
-    def __init__(
-        self, max_batch_size, max_seq_length, n_heads, head_dim, dtype=torch.bfloat16
-    ):
-        super().__init__()
-        cache_shape = (max_batch_size, n_heads, max_seq_length, head_dim)
-        self.register_buffer("k_cache", torch.zeros(cache_shape, dtype=dtype))
-        self.register_buffer("v_cache", torch.zeros(cache_shape, dtype=dtype))
-
-    def update(self, input_pos, k_val, v_val):
-        # input_pos: [S], k_val: [B, H, S, D]
-        assert input_pos.shape[0] == k_val.shape[2]
-
-        k_out = self.k_cache
-        v_out = self.v_cache
-        k_out[:, :, input_pos] = k_val
-        v_out[:, :, input_pos] = v_val
-
-        return k_out, v_out
-
-
 class Transformer(nn.Module):
     def __init__(self, config: ModelArgs) -> None:
         super().__init__()
@@ -146,20 +127,16 @@ class Transformer(nn.Module):
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
         self.freqs_cis: Optional[Tensor] = None
-        self.mask_cache: Optional[Tensor] = None
-        self.max_batch_size = -1
-        self.max_seq_length = -1
 
-    def setup_caches(self, max_batch_size, max_seq_length):
-        if (
-            self.max_seq_length >= max_seq_length
-            and self.max_batch_size >= max_batch_size
-        ):
-            return
+        # Fixed for now
+        self.max_batch_size = 1
+
+    def setup_caches(self, **kwargs):
+        cache_strategy = kwargs.pop("cache_strategy")
+        kwargs["max_cache_length"] = find_multiple(kwargs["max_cache_length"], 8)
+
         head_dim = self.config.dim // self.config.n_head
-        max_seq_length = find_multiple(max_seq_length, 8)
-        self.max_seq_length = max_seq_length
-        self.max_batch_size = max_batch_size
+
         dtype = self.output.weight.dtype
         # For quantized layers, dtype is encoded in scales
         if hasattr(self.output, "scales"):
@@ -167,12 +144,14 @@ class Transformer(nn.Module):
         elif hasattr(self.output, "scales_and_zeros"):
             dtype = self.output.scales_and_zeros.dtype
         for b in self.layers:
-            b.attention.kv_cache = KVCache(
-                max_batch_size,
-                max_seq_length,
+            cache_constructor = get_cache_constructor(cache_strategy=cache_strategy)
+            b.attention.kv_cache = cache_constructor(
+                self.max_batch_size,
                 self.config.n_local_heads,
                 head_dim,
                 dtype,
+                # Only pass in the kwargs we need for the cache we chose (useful especially for debugging)
+                **{k: kwargs[k] for k in cache_constructor.relevant_kwargs},
             )
 
         self.freqs_cis = precompute_freqs_cis(
@@ -181,13 +160,14 @@ class Transformer(nn.Module):
             self.config.rope_base,
             dtype,
         )
-        self.causal_mask = torch.tril(
-            torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool)
-        )
 
-    def forward(self, idx: Tensor, input_pos: Optional[Tensor] = None) -> Tensor:
+    def forward(
+        self,
+        idx: Tensor,
+        input_pos: Optional[Tensor] = None,
+        mask: Optional[Tensor] = None,
+    ) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
-        mask = self.causal_mask[None, None, input_pos]
         freqs_cis = self.freqs_cis[input_pos]
         x = self.tok_embeddings(idx)
 
@@ -263,12 +243,25 @@ class Attention(nn.Module):
 
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
-        if self.kv_cache is not None:
-            k, v = self.kv_cache.update(input_pos, k, v)
+        is_prefill = self.kv_cache.is_prefill()
+
+        cache_k, cache_v = self.kv_cache.update(input_pos, k, v)
+
+        # If we are in the prefill stage, we use the provided prompt kv-pairs
+        if not is_prefill:
+            k = cache_k
+            v = cache_v
 
         k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
-        y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0)
+        y = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            is_causal=False,
+            attn_mask=mask,
+            dropout_p=0.0,
+        )
 
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
