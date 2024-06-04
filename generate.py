@@ -243,6 +243,7 @@ def generate(
 
     tile_size = model.config.n_layer // len(cache_kwargs["max_cache_length"])
     cache_kwargs["max_cache_length"] = [item for item in cache_kwargs["max_cache_length"] for _ in range(tile_size)]
+    cache_kwargs["eviction_num"] = [int(cache_kwargs["eviction_num"] * l) for l in cache_kwargs["max_cache_length"]]
 
     assert (
         cache_kwargs["global_tokens"] <= min(cache_kwargs["max_cache_length"])
@@ -609,7 +610,7 @@ if __name__ == "__main__":
         help="Cache size per layer. If len < n layers, the values are tiled. Must have len divisible by n layers. \
         If 0 < x <= 1, it is percent of |prompt| + max new tokens. Otherwise, if > 1, its the maximum size.",
     )
-    parser.add_argument("--cache_strategy", default="full", choices=["full", "window"])
+    parser.add_argument("--cache_strategy", default="full", choices=["full", "window", "hh"])
     # Optional Cache Kwargs depending on cache_strategy
     parser.add_argument(
         "--global_tokens",
@@ -617,6 +618,21 @@ if __name__ == "__main__":
         type=int,
         help="The number of initial tokens to always include in the KV-Cache.  \
         If using window strategy, the actual window becomes max_cache_length - global_tokens.",
+    )
+
+    parser.add_argument(
+        "--history_attn_window",
+        default=400,
+        type=int,
+        help="The number of recently generated tokens to consider when identifying 'Heavy Hitters' in the KV-Cache.",
+    )
+
+    # Equivalent to Scissorhands "drop amount" ("m" in algorithm 2 - arxiv.org/abs/2305.17118)
+    parser.add_argument(
+        "--eviction_num",
+        default=0.5,
+        type=float,
+        help="The number of tokens to evict KV-Cache reaches capacity (max_cache_length). Expressed as a fraction of max_cache_length.",
     )
 
     args = parser.parse_args()
@@ -631,6 +647,8 @@ if __name__ == "__main__":
         "cache_strategy": args.cache_strategy,
         "max_cache_length": args.max_cache_length,
         "global_tokens": args.global_tokens,
+        "history_attn_window": args.history_attn_window,
+        "eviction_num": args.eviction_num,
     }
 
     main(
