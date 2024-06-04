@@ -104,17 +104,40 @@ class KVCache(ABC, nn.Module):
         """
         pass
 
-    def fill(self, fill_indices, input_pos, k_val, v_val):
-        self.k_cache[:, :, fill_indices] = k_val
-        self.v_cache[:, :, fill_indices] = v_val
-        self.pos[:, :, fill_indices] = input_pos.int()
+    def fill(self, fill_indices, input_pos, k_val, v_val, head_idx=None):
+        """
+        Modifies the cache in-place with key-value pairs at given fill_indices.
+
+        Args:
+            fill_indices (torch.Tensor): The indices specifying the positions to fill in the cache.
+            input_pos (torch.Tensor): The input positions corresponding to the fill_indices.
+            k_val (torch.Tensor): The key values to fill in the fill_indices slots.
+            v_val (torch.Tensor): The value values to fill in the fill_indices slots.
+            head_idx (int, optional): The head index to fill. If None, fill all heads. If not None, k_val.shape[1] (head dim) must be 1.
+
+        Returns:
+            None
+        """
+        # fill_indices [seq_len]
+        # input_pos [seq_len]
+        # k_val, v_val [batch_size, n_heads or 1, seq_len, head_dim]
+        # head_idx int or None: int iff k_val.shape[1] == 1
+        assert len(fill_indices) == len(input_pos) == k_val.shape[2] == v_val.shape[2]
+
+        head_idx = slice(None) if head_idx is None else head_idx  # slice(None) is equivalent to ":"
+        self.pos[:, head_idx, fill_indices] = input_pos.int()
+        self.k_cache[:, head_idx, fill_indices, :] = k_val
+        self.v_cache[:, head_idx, fill_indices, :] = v_val
+
+    def update_attn_history(self, attn):
+        raise Exception(f"{self.__class__.__name__} requested return_attn=True but has not yet implemented a update_attn_history function.")
 
 
 class KVCacheFull(KVCache):
     def __init__(
         self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
     ):
-        super().__init__(max_batch_size, n_heads, head_dim, dtype, **kwargs)
+        super().__init__(max_batch_size, n_heads, head_dim, dtype, head_specific=False, **kwargs)
 
     def _update(self, input_pos, k_val, v_val):
         # input_pos: [S], k_val: [B, H, S, D]
@@ -126,9 +149,9 @@ class KVCacheWindow(KVCache):
     relevant_kwargs = ["max_cache_length", "global_tokens"]
 
     def __init__(
-        self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
+        self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, head_specific=False, **kwargs
     ):
-        super().__init__(max_batch_size, n_heads, head_dim, dtype, **kwargs)
+        super().__init__(max_batch_size, n_heads, head_dim, dtype, head_specific, **kwargs)
 
         # This turns True when the global tokens are fully filled
         self.global_filled = self.global_tokens == 0
@@ -147,32 +170,121 @@ class KVCacheWindow(KVCache):
         self.pos.masked_fill_(global_mask, self.max_cache_length)
         return (global_mask.sum() == self.global_tokens).item()
 
-    def _update(self, input_pos, k_val, v_val):
-        # Prefill case: If prompt > window, then we need to chop off early positions
-        window = self.k_cache.shape[2]
-        if input_pos.shape[0] > window:
+    def fill_prefill(self, input_pos, k_val, v_val):
+        """
+        Fill the cache during the prefill (prompt encoding + new tokens until cache is full).
+        This occurs just once so better to separate out the logic from #fill
+        """
+        max_cache_length = self.k_cache.shape[2]
+        num_tokens = input_pos.shape[0]
+
+        # If the prompt is longer than the max cache length
+        if num_tokens > max_cache_length:
             # [global; ...; window - global] --> [global; window - global]
             # Indices for first global_tokens tokens and last (window - global_tokens) tokens
             keep_idxs = list(range(self.global_tokens)) + list(
                 range(
-                    input_pos.shape[0] - window + self.global_tokens, input_pos.shape[0]
+                    input_pos.shape[0] - max_cache_length + self.global_tokens, num_tokens
                 )
             )
             input_pos = input_pos[keep_idxs]
             k_val = k_val[:, :, keep_idxs]
             v_val = v_val[:, :, keep_idxs]
 
+        self.fill(fill_indices=input_pos, input_pos=input_pos, k_val=k_val, v_val=v_val)
+        self.global_filled = self.mark_global_tokens()
+
+    def _update(self, input_pos, k_val, v_val):
+        if self.insertions < self.max_cache_length:  # Insert into first unfilled spots
+            self.fill_prefill(input_pos, k_val, v_val)
+            return
+
         # Identify the lowest positions in the cache that are not filled
         pos = self.pos[:, 0, :].squeeze(1)
-        _, min_k_indices = pos.topk(input_pos.shape[0], largest=False)
-        min_k_indices = min_k_indices.squeeze(0)
+        # NB: Torch.topk does not guarantee sorted order
+        _, fill_indices = pos.topk(input_pos.shape[0], largest=False)
+        fill_indices = fill_indices.squeeze(0)
 
-        self.fill(
-            fill_indices=min_k_indices, input_pos=input_pos, k_val=k_val, v_val=v_val
-        )
+        self.fill(fill_indices=fill_indices, input_pos=input_pos, k_val=k_val, v_val=v_val)
 
         # This is a potentially costly operation which doesn't need to be repeated once we've filled the global tokens
         self.global_filled = self.global_filled or self.mark_global_tokens()
+
+
+class KVCacheScissorhands(KVCacheWindow):
+    relevant_kwargs = ["max_cache_length", "global_tokens", "history_window_size", "drop_amount", "recent_window", "normalize_history_attn"]
+
+    def __init__(
+        self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, head_specific=True, **kwargs
+    ):
+        super().__init__(max_batch_size, n_heads, head_dim, dtype, head_specific, **kwargs)
+
+        # Initialize a buffer for the attention histories
+        history_shape = (max_batch_size, n_heads, self.max_cache_length, self.history_window_size)
+        self.register_buffer("attn_history", torch.empty(history_shape, dtype=torch.bool))
+        self.attn_counter = 0
+
+        # Different eviction queue for each attention head
+        self.eviction_queue = [[] for _ in range(n_heads)]
+
+        # We set global tokens to a really high number in the self.pos so this will break that
+        if self.normalize_history_attn: assert self.global_tokens == 0
+
+    def return_attn(self) -> bool:
+        """
+        Whether or not we need to return attention weights for cache management.
+
+        We return attention weights if 2 conditions are met:
+        1) The cache is not in the prefill stage
+        2) The number of tokens left in the eviction queue < attention history window.
+
+        The number of tokens in eviction queue specifies how many turns before we need to re-calculate importance.
+        We only need to start recording once the number of steps until recomputation is equal to the recent window.
+        """
+        return not self.is_prefill() and len(self.eviction_queue[0]) <= self.history_window_size
+
+    def update_attn_history(self, attn: torch.Tensor):
+        """
+        Insert the most recent attention into the history buffer.
+
+        Rather than raw probability, insert a binary indicator of whether the attention is "low".
+        """
+        attn = attn.squeeze()
+        keys = attn.shape[1]
+        attn_is_low = (attn < 1 / keys).int()
+        self.attn_history[:, :, :keys, self.attn_counter % self.history_window_size] = attn_is_low
+        self.attn_counter += 1
+
+    def refill_eviction_queue(self, input_pos: int):
+        # Identify the tokens with the most "low" attentions
+        unimportant_cts = self.attn_history.sum(dim=-1)
+
+        if self.normalize_history_attn:
+            # TODO: Consider taking the sqrt / log of the denominator
+            unimportant_cts = unimportant_cts.float() / (input_pos - self.pos)
+
+        # Save the recent tokens from being evicted
+        unimportant_cts.masked_fill_(self.pos >= input_pos - self.recent_window, -1)
+
+        _, unimportant_toks = unimportant_cts.topk(self.drop_amount, dim=-1, sorted=True, largest=True)
+        self.eviction_queue = unimportant_toks.squeeze(0).tolist()
+
+    def _update(self, input_pos, k_val, v_val):
+        if self.insertions < self.max_cache_length:  # Insert into first unfilled spots
+            self.fill_prefill(input_pos, k_val, v_val)
+            return
+
+        # This is a potentially costly operation which doesn't need to be repeated once we've filled the global tokens
+        self.global_filled = self.global_filled or self.mark_global_tokens()
+
+        # Refill the eviction queue only if it is empty (potentially expensive operation)
+        len(self.eviction_queue[0]) > 0 or self.refill_eviction_queue(input_pos.item())
+
+        fill_indices = [self.eviction_queue[head_idx].pop(0) for head_idx in range(len(self.eviction_queue))]
+
+        for head_idx, fi in enumerate(fill_indices):
+            self.fill(fill_indices=[fi], input_pos=input_pos, k_val=k_val[:, head_idx:head_idx+1], v_val=v_val[:, head_idx:head_idx+1], head_idx=head_idx)
+            self.attn_history[:, head_idx, fi, :] = 0
 
 
 def get_cache_constructor(cache_strategy):
@@ -180,5 +292,7 @@ def get_cache_constructor(cache_strategy):
         return KVCacheFull
     elif cache_strategy == "window":
         return KVCacheWindow
+    elif cache_strategy == "scissor":
+        return KVCacheScissorhands
     else:
         raise ValueError(f"Invalid cache strategy: {cache_strategy}")
