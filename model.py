@@ -146,8 +146,9 @@ class Transformer(nn.Module):
         for layer_idx, b in enumerate(self.layers):
             cache_constructor = get_cache_constructor(cache_strategy=cache_strategy)
             # Only pass in the kwargs we need for the cache we chose (useful especially for debugging)
+            layerwise_keys = {"max_cache_length", "drop_amount"}
             layer_kwargs = {
-                k: kwargs[k][layer_idx] if k == "max_cache_length" else kwargs[k]
+                k: kwargs[k][layer_idx] if k in layerwise_keys else kwargs[k]
                 for k in cache_constructor.relevant_kwargs
             }
             b.attention.kv_cache = cache_constructor(
@@ -263,6 +264,13 @@ class Attention(nn.Module):
             dropout_p=0.0,
             return_attn=return_attn,
         )
+
+        if attn is not None:
+            # Mean pool over the grouped queries (average over self.n_head // self.n_local_heads)
+            attn = attn.view(
+                bsz, self.n_local_heads, self.n_head // self.n_local_heads, seqlen, -1
+            ).mean(dim=2)
+            self.kv_cache.update_attn_history(attn)
 
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
