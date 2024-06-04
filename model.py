@@ -244,16 +244,10 @@ class Attention(nn.Module):
 
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
-        is_prefill = self.kv_cache.is_prefill()
         # Ask the cache if we need to return the attention weights
         return_attn = self.kv_cache.requires_attn()
 
-        cache_k, cache_v = self.kv_cache.update(input_pos, k, v)
-
-        # If we are in the prefill stage, we use the provided prompt kv-pairs
-        if not is_prefill:
-            k = cache_k
-            v = cache_v
+        k, v = self.kv_cache.update(input_pos, k, v)
 
         k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)

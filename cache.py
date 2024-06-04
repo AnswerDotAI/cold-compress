@@ -48,12 +48,6 @@ class KVCache(ABC, nn.Module):
         self.updates = 0
         self.insertions = 0
 
-    def is_prefill(self):
-        # If we are in the prefill stage, we have updated the cache at most once (self.updates <=1)
-        # Prefill --> full self-attention (no KV-cache needed).
-        # Otherwise --> query the KV-cache.
-        return self.updates == 0
-
     def reset(self):
         """
         If needed, this will reset the cache, although it is likely not necessary for most cache types.
@@ -90,12 +84,17 @@ class KVCache(ABC, nn.Module):
         self.updates += 1
         self.insertions += input_pos.shape[0]
 
-        # Truncate the unfilled part of the cache
-        # Since we always fill in-order it will be at the end
-        truncate_idx = min(self.insertions, self.max_cache_length)
-        return self.k_cache[:, :, :truncate_idx, :], self.v_cache[
-            :, :, :truncate_idx, :
-        ]
+
+        if self.updates > 1:
+            # Truncate the unfilled part of the cache
+            # Since we always fill in-order it will be at the end
+            truncate_idx = min(self.insertions, self.max_cache_length)
+            return self.k_cache[:, :, :truncate_idx, :], self.v_cache[
+                :, :, :truncate_idx, :
+            ]
+        else:
+            # We are in the prefill stage, so just return the original k and v values
+            return k_val, v_val
 
     @abstractmethod
     def _update(self, input_pos, k_val, v_val):
