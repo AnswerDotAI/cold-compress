@@ -64,6 +64,12 @@ class KVCache(ABC, nn.Module):
         self.insertions = 0
         self.updates = 0
 
+    def requires_attn(self):
+        """
+        Returns whether the cache requires attention weights for cache management.
+        """
+        return False
+
     def update(self, input_pos, k_val, v_val):
         """
         Updates the cache with the given input positions, keys, and values.

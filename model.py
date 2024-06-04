@@ -11,6 +11,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 
+from attention_utils import scaled_dot_product_attention
 from cache import get_cache_constructor
 
 
@@ -244,6 +245,8 @@ class Attention(nn.Module):
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
         is_prefill = self.kv_cache.is_prefill()
+        # Ask the cache if we need to return the attention weights
+        return_attn = self.kv_cache.requires_attn()
 
         cache_k, cache_v = self.kv_cache.update(input_pos, k, v)
 
@@ -254,13 +257,14 @@ class Attention(nn.Module):
 
         k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
-        y = F.scaled_dot_product_attention(
+        y, attn = scaled_dot_product_attention(
             q,
             k,
             v,
             is_causal=False,
             attn_mask=mask,
             dropout_p=0.0,
+            return_attn=return_attn,
         )
 
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
