@@ -33,7 +33,7 @@ default_device = "cuda" if torch.cuda.is_available() else "cpu"
 wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
-from model import Transformer
+from model import Transformer, find_multiple
 from tokenizer import Llama3ChatFormat, get_tokenizer
 
 
@@ -189,6 +189,21 @@ def speculative_decode(
         return torch.cat([draft_tokens[:accept_length], next_token])
 
 
+def normalize_cache_length(max_cache_length: float, max_seq_length: int, multiple_of: int = 8) -> int:
+    """
+    Computes the absolute cache length given the max_cache_length and max_seq_length.
+    """
+    if 0 < max_cache_length <= 1:
+        max_cache_length = round(max_seq_length * max_cache_length)
+    else:
+        assert int(max_cache_length) == max_cache_length
+        max_cache_length = int(max_cache_length)
+        assert (
+            max_cache_length < max_seq_length
+        ), f"Specified max cache length ({max_cache_length}) must be less than max_seq_length ({max_seq_length})."
+    return find_multiple(max_cache_length, multiple_of)
+
+
 @torch.no_grad()
 def generate(
     model: Transformer,
@@ -198,7 +213,6 @@ def generate(
     interactive: bool,
     draft_model: Transformer,
     speculate_k: Optional[int] = 8,
-    max_cache_length: Optional[float] = 1.0,
     callback=lambda x: x,
     terminator_ids: Optional[list] = None,
     cache_kwargs: dict = None,
@@ -223,20 +237,15 @@ def generate(
         max_seq_length + speculate_k + 1 if is_speculative else max_seq_length
     )
 
-    # Update max_cache_length if expressed as a fraction
-    max_cache_length = cache_kwargs["max_cache_length"]
-    if 0 < max_cache_length <= 1:
-        max_cache_length = round(max_seq_length * max_cache_length)
-    else:
-        assert int(max_cache_length) == max_cache_length
-        max_cache_length = int(max_cache_length)
-        assert (
-            max_cache_length < max_seq_length
-        ), f"Specified max cache length ({max_cache_length}) must be less than max_seq_length ({max_seq_length})."
-    cache_kwargs["max_cache_length"] = max_cache_length
+    # Normalize max_cache_length to absolute cache length if provided as a fraction of the max seq sequence length
+    cache_kwargs["max_cache_length"] = list(map(lambda l: normalize_cache_length(l, max_seq_length), cache_kwargs["max_cache_length"]))
+    assert model.config.n_layer % len(cache_kwargs["max_cache_length"]) == 0, f'max_cache_length ({len(cache_kwargs["max_cache_length"])}) must be a factor of {model.config.n_layer} layers.'
+
+    tile_size = model.config.n_layer // len(cache_kwargs["max_cache_length"])
+    cache_kwargs["max_cache_length"] = [item for item in cache_kwargs["max_cache_length"] for _ in range(tile_size)]
 
     assert (
-        cache_kwargs["global_tokens"] <= max_cache_length
+        cache_kwargs["global_tokens"] <= min(cache_kwargs["max_cache_length"])
     ), "Global tokens must be less than max_cache_length."
 
     with torch.device(device):
@@ -494,7 +503,6 @@ def main(
                 draft_model=draft_model,
                 speculate_k=speculate_k,
                 interactive=interactive,
-                max_cache_length=args.max_cache_length,
                 callback=callback,
                 temperature=temperature,
                 top_k=top_k,
@@ -596,8 +604,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_cache_length",
         type=float,
-        default=1.0,
-        help="Cache size. If 0 < x <= 1, it is percent of |prompt| + max new tokens. Otherwise, if > 1, its the maximum size.",
+        default=[1.0],
+        nargs="+",
+        help="Cache size per layer. If len < n layers, the values are tiled. Must have len divisible by n layers. \
+        If 0 < x <= 1, it is percent of |prompt| + max new tokens. Otherwise, if > 1, its the maximum size.",
     )
     parser.add_argument("--cache_strategy", default="full", choices=["full", "window"])
     # Optional Cache Kwargs depending on cache_strategy
@@ -612,9 +622,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.cache_strategy == "full":
-        # Full implies no compression, which means --max_cache_length = 1.0 (same size as prompt + max_new_tokens)
+        # Full implies no compression, which means --max_cache_length = [1.0] (same size as prompt + max_new_tokens)
         assert (
-            args.max_cache_length == 1.0
+            all([l == 1.0 for l in args.max_cache_length])
         ), "Full cache strategy only supports max_cache_length=1.0."
 
     cache_kwargs = {

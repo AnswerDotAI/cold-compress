@@ -134,7 +134,6 @@ class Transformer(nn.Module):
 
     def setup_caches(self, **kwargs):
         cache_strategy = kwargs.pop("cache_strategy")
-        kwargs["max_cache_length"] = find_multiple(kwargs["max_cache_length"], 8)
 
         head_dim = self.config.dim // self.config.n_head
 
@@ -144,15 +143,16 @@ class Transformer(nn.Module):
             dtype = self.output.scales.dtype
         elif hasattr(self.output, "scales_and_zeros"):
             dtype = self.output.scales_and_zeros.dtype
-        for b in self.layers:
+        for layer_idx, b in enumerate(self.layers):
             cache_constructor = get_cache_constructor(cache_strategy=cache_strategy)
+            # Only pass in the kwargs we need for the cache we chose (useful especially for debugging)
+            layer_kwargs = {k: kwargs[k][layer_idx] if k == "max_cache_length" else kwargs[k] for k in cache_constructor.relevant_kwargs}
             b.attention.kv_cache = cache_constructor(
                 self.max_batch_size,
                 self.config.n_local_heads,
                 head_dim,
                 dtype,
-                # Only pass in the kwargs we need for the cache we chose (useful especially for debugging)
-                **{k: kwargs[k] for k in cache_constructor.relevant_kwargs},
+                **layer_kwargs,
             )
 
         self.freqs_cis = precompute_freqs_cis(
