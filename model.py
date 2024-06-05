@@ -146,7 +146,10 @@ class Transformer(nn.Module):
         for layer_idx, b in enumerate(self.layers):
             cache_constructor = get_cache_constructor(cache_strategy=cache_strategy)
             # Only pass in the kwargs we need for the cache we chose (useful especially for debugging)
-            layer_kwargs = {k: kwargs[k][layer_idx] if k == "max_cache_length" else kwargs[k] for k in cache_constructor.relevant_kwargs}
+            layer_kwargs = {
+                k: kwargs[k][layer_idx] if k == "max_cache_length" else kwargs[k]
+                for k in cache_constructor.relevant_kwargs
+            }
             b.attention.kv_cache = cache_constructor(
                 self.max_batch_size,
                 self.config.n_local_heads,
@@ -245,7 +248,7 @@ class Attention(nn.Module):
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
         # Ask the cache if we need to return the attention weights
-        return_attn = self.kv_cache.requires_attn()
+        return_attn = self.kv_cache.return_attn()
 
         k, v = self.kv_cache.update(input_pos, k, v)
 

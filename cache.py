@@ -58,7 +58,7 @@ class KVCache(ABC, nn.Module):
         self.insertions = 0
         self.updates = 0
 
-    def requires_attn(self):
+    def return_attn(self):
         """
         Returns whether the cache requires attention weights for cache management.
         """
@@ -83,7 +83,6 @@ class KVCache(ABC, nn.Module):
         # Update counters
         self.updates += 1
         self.insertions += input_pos.shape[0]
-
 
         if self.updates > 1:
             # Truncate the unfilled part of the cache
@@ -144,8 +143,8 @@ class KVCacheWindow(KVCache):
         """
         # We put max priority on leading "global" tokens
         global_mask = torch.logical_and(self.pos < self.global_tokens, self.pos >= 0)
-        # Give self.score an arbitrary high value for global tokens so that they are not replaced
-        self.pos.masked_fill_(global_mask, LARGE_INTEGER)
+        # Give self.pos an highest possible position value for global tokens so that they are not replaced
+        self.pos.masked_fill_(global_mask, self.max_cache_length)
         return (global_mask.sum() == self.global_tokens).item()
 
     def _update(self, input_pos, k_val, v_val):

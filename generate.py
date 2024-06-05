@@ -37,13 +37,8 @@ from model import Transformer, find_multiple
 from tokenizer import Llama3ChatFormat, get_tokenizer
 
 
-MOCK_LONG_PROMPT = """Consider a scenario where a city is planning to transition to a smart city infrastructure.
-The plan includes implementing smart traffic management systems, energy-efficient street lighting, and real-time monitoring of public utilities.
-Additionally, the city aims to enhance public safety through advanced surveillance and emergency response systems.
-As an urban planner, discuss the potential benefits, challenges, and necessary steps for successful implementation.
-Specifically, address how these changes can improve city life, the technological and financial hurdles that may arise, and the steps needed to ensure data privacy and community support.
-
-Be verbose and detailed.
+MOCK_LONG_PROMPT = """Write a detailed textbook on how to build a house from scratch.
+Write a separate chapter for each stage from initial planning to furnishing.
 """
 
 
@@ -189,7 +184,9 @@ def speculative_decode(
         return torch.cat([draft_tokens[:accept_length], next_token])
 
 
-def normalize_cache_length(max_cache_length: float, max_seq_length: int, multiple_of: int = 8) -> int:
+def normalize_cache_length(
+    max_cache_length: float, max_seq_length: int, multiple_of: int = 8
+) -> int:
     """
     Computes the absolute cache length given the max_cache_length and max_seq_length.
     """
@@ -238,14 +235,23 @@ def generate(
     )
 
     # Normalize max_cache_length to absolute cache length if provided as a fraction of the max seq sequence length
-    cache_kwargs["max_cache_length"] = list(map(lambda l: normalize_cache_length(l, max_seq_length), cache_kwargs["max_cache_length"]))
-    assert model.config.n_layer % len(cache_kwargs["max_cache_length"]) == 0, f'max_cache_length ({len(cache_kwargs["max_cache_length"])}) must be a factor of {model.config.n_layer} layers.'
+    cache_kwargs["max_cache_length"] = list(
+        map(
+            lambda l: normalize_cache_length(l, max_seq_length),
+            cache_kwargs["max_cache_length"],
+        )
+    )
+    assert (
+        model.config.n_layer % len(cache_kwargs["max_cache_length"]) == 0
+    ), f'max_cache_length ({len(cache_kwargs["max_cache_length"])}) must be a factor of {model.config.n_layer} layers.'
 
     tile_size = model.config.n_layer // len(cache_kwargs["max_cache_length"])
-    cache_kwargs["max_cache_length"] = [item for item in cache_kwargs["max_cache_length"] for _ in range(tile_size)]
+    cache_kwargs["max_cache_length"] = [
+        item for item in cache_kwargs["max_cache_length"] for _ in range(tile_size)
+    ]
 
-    assert (
-        cache_kwargs["global_tokens"] <= min(cache_kwargs["max_cache_length"])
+    assert cache_kwargs["global_tokens"] <= min(
+        cache_kwargs["max_cache_length"]
     ), "Global tokens must be less than max_cache_length."
 
     with torch.device(device):
@@ -428,7 +434,11 @@ def main(
         encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
     prompt_length = encoded.size(0)
 
-    terminator_ids = [tokenizer.eos_id(), tokenizer.special_tokens["<|eot_id|>"]]
+    terminator_ids = (
+        None
+        if args.no_terminators
+        else [tokenizer.eos_id(), tokenizer.special_tokens["<|eot_id|>"]]
+    )
 
     torch.manual_seed(1234)
     model_size = _get_model_size(model)
@@ -572,6 +582,12 @@ if __name__ == "__main__":
         "--temperature", type=float, default=0.8, help="Temperature for sampling."
     )
     parser.add_argument(
+        "-no_terminators",
+        default=False,
+        action="store_true",
+        help="If you want the model to generate the full max tokens. Useful for profiling memory.",
+    )
+    parser.add_argument(
         "--checkpoint_path",
         type=Path,
         default=Path(__file__).resolve().parent
@@ -623,8 +639,8 @@ if __name__ == "__main__":
 
     if args.cache_strategy == "full":
         # Full implies no compression, which means --max_cache_length = [1.0] (same size as prompt + max_new_tokens)
-        assert (
-            all([l == 1.0 for l in args.max_cache_length])
+        assert all(
+            [l == 1.0 for l in args.max_cache_length]
         ), "Full cache strategy only supports max_cache_length=1.0."
 
     cache_kwargs = {
