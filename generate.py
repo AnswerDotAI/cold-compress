@@ -37,11 +37,6 @@ from model import Transformer, find_multiple
 from tokenizer import Llama3ChatFormat, get_tokenizer
 
 
-MOCK_LONG_PROMPT = """Write a detailed textbook on how to build a house from scratch.
-Write a separate chapter for each stage from initial planning to furnishing.
-"""
-
-
 def multinomial_sample_one_no_sync(
     probs_sort,
 ):  # Does multinomial sampling without a cuda synchronization
@@ -565,7 +560,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Your CLI description.")
 
     parser.add_argument(
-        "--prompt", type=str, default=MOCK_LONG_PROMPT, help="Input prompt."
+        "--prompt",
+        type=str,
+        default="long_prompt_short_output.txt",
+        help="Input prompt. If it ends in .txt, we will load the prompt from the ./prompts dir.",
     )
 
     parser.add_argument(
@@ -636,6 +634,11 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+
+    if args.prompt.endswith(".txt"):
+        prompt_fn = Path(__file__).resolve().parent / "prompts" / args.prompt
+        with open(prompt_fn) as fd:
+            args.prompt = fd.read().strip()
 
     if args.cache_strategy == "full":
         # Full implies no compression, which means --max_cache_length = [1.0] (same size as prompt + max_new_tokens)
