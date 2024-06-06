@@ -218,6 +218,7 @@ def generate(
     # create an empty tensor of the expected final shape and fill in the current tokens
     T = prompt.size(0)
     T_new = T + max_new_tokens
+    print(f"Maximum context length of {T_new} tokens.")
     if interactive:
         max_seq_length = 350
     else:
@@ -663,11 +664,10 @@ if __name__ == "__main__":
         help="The number of recently generated tokens to always save when evicting tokens from the ScissorHands KV-Cache.",
     )
     parser.add_argument(
-        "--normalize_history_attn",
+        "-attn_thresholding",
         default=False,
         action="store_true",
-        help="Whether to mean normalize the sum of the historical attention probs in the ScissorHands KV-Cache. \
-            Reduces tendency to drop early tokens with more attended queries.",
+        help="Whether to accumulate number of times a token was unimportant (binary) versus raw un-normalized probabilities. If true, less precise yet more space efficient.",
     )
 
     args = parser.parse_args()
@@ -690,7 +690,7 @@ if __name__ == "__main__":
         "history_window_size": args.history_window_size,
         "drop_amount": args.drop_amount,
         "recent_window": args.recent_window,
-        "normalize_history_attn": args.normalize_history_attn,
+        "attn_thresholding": args.attn_thresholding,
     }
 
     main(

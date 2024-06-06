@@ -248,29 +248,26 @@ class Attention(nn.Module):
 
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
-        # Ask the cache if we need to return the attention weights
-        return_attn = self.kv_cache.return_attn()
+        k, v, attn_callback = self.kv_cache.update(input_pos, k, v)
 
-        k, v = self.kv_cache.update(input_pos, k, v)
-
-        k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
-        v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
+        k_rep = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
+        v_rep = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
         y, attn = scaled_dot_product_attention(
             q,
-            k,
-            v,
+            k_rep,
+            v_rep,
             is_causal=False,
             attn_mask=mask,
             dropout_p=0.0,
-            return_attn=return_attn,
+            return_attn=attn_callback is not None,
         )
 
-        if attn is not None:
+        if attn_callback:
             # Mean pool over the grouped queries (average over self.n_head // self.n_local_heads)
             attn = attn.view(
                 bsz, self.n_local_heads, self.n_head // self.n_local_heads, seqlen, -1
             ).mean(dim=2)
-            self.kv_cache.update_attn_history(attn)
+            attn_callback(input_pos, k, v, attn)
 
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
