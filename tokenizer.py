@@ -131,7 +131,7 @@ class Message(TypedDict):
 
 
 class Llama3ChatFormat:
-    def __init__(self, tokenizer: TokenizerInterface):
+    def __init__(self, tokenizer: TiktokenWrapper):
         self.tokenizer = tokenizer
 
     def encode_header(self, message: Message) -> List[int]:
@@ -158,3 +158,17 @@ class Llama3ChatFormat:
             # Add the start of an assistant message for the model to complete.
             *self.encode_header({"role": "assistant", "content": ""}),
         ]
+
+
+class Llama2ChatFormat:
+    B_INST = "[INST]"
+    E_INST = "[/INST]"
+
+    def __init__(self, tokenizer: SentencePieceWrapper):
+        self.tokenizer = tokenizer
+
+    def encode_prompt(self, prompt: str):
+        ids = [self.tokenizer.bos_id()]
+        ids += self.tokenizer.encode(Llama2ChatFormat.B_INST + "\n\n")
+        ids += self.tokenizer.encode(prompt + " " + Llama2ChatFormat.E_INST)
+        return ids

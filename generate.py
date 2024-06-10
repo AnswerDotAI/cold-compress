@@ -34,7 +34,7 @@ wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
 from model import Transformer, find_multiple
-from tokenizer import Llama3ChatFormat, get_tokenizer
+from tokenizer import Llama3ChatFormat, Llama2ChatFormat, get_tokenizer
 
 
 def multinomial_sample_one_no_sync(
@@ -408,6 +408,8 @@ def main(
         or "instruct" in str(checkpoint_path).lower()
     )
 
+    is_llama2 = "llama-2" in str(checkpoint_path).lower()
+
     print("Loading model ...")
     t0 = time.time()
     model = _load_model(checkpoint_path, device, precision, use_tp)
@@ -423,17 +425,18 @@ def main(
     tokenizer = get_tokenizer(tokenizer_path, checkpoint_path)
 
     if is_chat:
-        tokens = Llama3ChatFormat(tokenizer).encode_prompt(prompt)
+        template_cls = Llama2ChatFormat if is_llama2 else Llama3ChatFormat
+        tokens = template_cls(tokenizer).encode_prompt(prompt)
         encoded = torch.tensor(tokens, dtype=torch.int, device=device)
     else:
         encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
     prompt_length = encoded.size(0)
 
-    terminator_ids = (
-        None
-        if args.no_terminators
-        else [tokenizer.eos_id(), tokenizer.special_tokens["<|eot_id|>"]]
-    )
+    terminator_ids = [tokenizer.eos_id()]
+    if not is_llama2:
+        terminator_ids.append(tokenizer.special_tokens["<|eot_id|>"])
+    if args.no_terminators:
+        terminator_ids = None
 
     torch.manual_seed(1234)
     model_size = _get_model_size(model)
@@ -589,7 +592,7 @@ if __name__ == "__main__":
         "--checkpoint_path",
         type=Path,
         default=Path(__file__).resolve().parent
-        / "checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth",
+        / "checkpoints/meta-llama/Llama-2-7b-chat-hf/model.pth",
         help="Model checkpoint path.",
     )
     parser.add_argument(
