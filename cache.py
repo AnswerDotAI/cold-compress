@@ -304,6 +304,28 @@ class KVCacheFull(KVCache):
         return self.fill_contiguous(input_pos, k_val, v_val)
 
 
+class KVCacheRandom(KVCache):
+    def __init__(
+        self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
+    ):
+        super().__init__(
+            max_batch_size, n_heads, head_dim, dtype, head_specific=False, **kwargs
+        )
+        self.global_tokens = 0
+        self.global_filled = True
+
+    def _update(self, input_pos, k_val, v_val):
+        start = end = None  # We will fill the cache in order if start and end are None
+
+        need_to_evict = self.insertions >= self.max_cache_length
+        if need_to_evict:  # Select a spot at random
+            start = torch.randint(low=0, high=self.max_cache_length, size=(1,)).item()
+            end = start + 1
+
+        # Specify specific start and end indices
+        self.fill_contiguous(input_pos, k_val, v_val, start=start, end=end)
+
+
 class KVCacheWindow(KVCache):
     relevant_kwargs = ["max_cache_length", "global_tokens"]
 
@@ -487,6 +509,8 @@ class KVCacheScissorhands(KVCacheWindow):
 def get_cache_constructor(cache_strategy):
     if cache_strategy == "full":
         return KVCacheFull
+    elif cache_strategy == "random":
+        return KVCacheRandom
     elif cache_strategy == "window":
         return KVCacheWindow
     elif cache_strategy == "scissor":

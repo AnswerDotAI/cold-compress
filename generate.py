@@ -632,7 +632,9 @@ if __name__ == "__main__":
         If 0 < x <= 1, it is percent of |prompt| + max new tokens. Otherwise, if > 1, its the maximum size.",
     )
     parser.add_argument(
-        "--cache_strategy", default="full", choices=["full", "window", "scissor"]
+        "--cache_strategy",
+        default="full",
+        choices=["full", "random", "window", "scissor"],
     )
     # Optional Cache Kwargs depending on cache_strategy
     parser.add_argument(
