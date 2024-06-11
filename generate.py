@@ -62,7 +62,7 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
 
 
 def prefill(
-    model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs
+    model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, attn_top_k: int, **sampling_kwargs
 ) -> torch.Tensor:
     # input_pos: [B, S]
     causal_mask = (
@@ -71,16 +71,16 @@ def prefill(
         .unsqueeze(0)
         .to(x.device)
     )
-    logits = model(x, input_pos, mask=causal_mask)
+    logits = model(x, input_pos, attn_top_k=attn_top_k, mask=causal_mask)
     return sample(logits, **sampling_kwargs)[0]
 
 
 def decode_one_token(
-    model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs
+    model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, attn_top_k: int, **sampling_kwargs
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     # input_pos: [B, 1]
     assert input_pos.shape[-1] == 1
-    logits = model(x, input_pos)
+    logits = model(x, input_pos, attn_top_k=attn_top_k)
     return sample(logits, **sampling_kwargs)
 
 
@@ -90,6 +90,7 @@ def decode_n_tokens(
     input_pos: torch.Tensor,
     num_new_tokens: int,
     terminator_ids: Optional[list] = None,
+    attn_top_k: int = 0,
     callback=lambda _: _,
     **sampling_kwargs,
 ):
@@ -99,7 +100,7 @@ def decode_n_tokens(
             enable_flash=False, enable_mem_efficient=False, enable_math=True
         ):  # Actually better for Inductor to codegen attention here
             next_token, next_prob = decode_one_token(
-                model, cur_token, input_pos, **sampling_kwargs
+                model, cur_token, input_pos, attn_top_k, **sampling_kwargs
             )
 
             if terminator_ids and next_token in terminator_ids:
@@ -205,6 +206,7 @@ def generate(
     interactive: bool,
     draft_model: Transformer,
     speculate_k: Optional[int] = 8,
+    attn_top_k: Optional[int] = 0,
     callback=lambda x: x,
     terminator_ids: Optional[list] = None,
     cache_kwargs: dict = None,
@@ -266,7 +268,7 @@ def generate(
     input_pos = torch.arange(0, T, device=device)
 
     next_token = prefill(
-        model, prompt.view(1, -1), input_pos, **sampling_kwargs
+        model, prompt.view(1, -1), input_pos, attn_top_k, **sampling_kwargs
     ).clone()
     if is_speculative:
         prefill(draft_model, prompt.view(1, -1), input_pos, **sampling_kwargs)
@@ -297,6 +299,7 @@ def generate(
             next_token.view(1, -1),
             input_pos,
             max_new_tokens - 1,
+            attn_top_k=attn_top_k,
             callback=callback,
             terminator_ids=terminator_ids,
             **sampling_kwargs,
@@ -385,6 +388,7 @@ def main(
     profile: Optional[Path] = None,
     draft_checkpoint_path: Optional[Path] = None,
     speculate_k: int = 5,
+    attn_top_k: int = 0,
     device=default_device,
     cache_kwargs: dict = {},
 ) -> None:
@@ -514,6 +518,7 @@ def main(
                 max_new_tokens,
                 draft_model=draft_model,
                 speculate_k=speculate_k,
+                attn_top_k=attn_top_k,
                 interactive=interactive,
                 callback=callback,
                 temperature=temperature,
@@ -644,6 +649,14 @@ if __name__ == "__main__":
         If using window strategy, the actual window becomes max_cache_length - global_tokens.",
     )
 
+    # Attention Top-K approximation
+    parser.add_argument(
+        "--attn_top_k",
+        type=int,
+        default=0,
+        help="Top-k approximation for attention. 0 is no approximation.",
+    )
+
     # Scissorhands-specific Hyperparameters (--cache_strategy == "scissor")
     ## See Algorithm 1 & 2 in arxiv.org/abs/2305.17118
     parser.add_argument(
@@ -707,6 +720,7 @@ if __name__ == "__main__":
         args.profile,
         args.draft_checkpoint_path,
         args.speculate_k,
+        args.attn_top_k,
         args.device,
         cache_kwargs,
     )

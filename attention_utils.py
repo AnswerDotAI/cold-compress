@@ -14,6 +14,7 @@ def scaled_dot_product_attention(
     is_causal=False,
     scale=None,
     return_attn=False,
+    attn_top_k=0,
 ) -> Tuple[torch.Tensor, torch.Tensor | None]:
     """
     Uses naive PyTorch sdpa implementation if we need to return_attn. Otherwise use the optimized version.
@@ -30,9 +31,15 @@ def scaled_dot_product_attention(
             is_causal=is_causal,
             scale=scale,
         ), None
-    B, L, S = query.size(0), query.size(-2), key.size(-2)
+    B, H, L, S = query.size(0), query.size(1), query.size(-2), key.size(-2)
     scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
     attn_weight = query @ key.transpose(-2, -1) * scale_factor
+
+    top_k_idxs = None
+    if attn_top_k > 0:
+        _, top_k_idxs = attn_weight.mean(dim=-2).topk(min(S, attn_top_k), dim=-1)
+        value = value.gather(-2, top_k_idxs.unsqueeze(-1).expand(-1, -1, -1, value.shape[-1]))
+        attn_weight = attn_weight.gather(-1, top_k_idxs.unsqueeze(-2).expand(-1, -1, attn_weight.shape[-2], -1))
 
     needs_masking = is_causal or attn_mask is not None
     if needs_masking:
@@ -52,6 +59,9 @@ def scaled_dot_product_attention(
             attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
         else:
             attn_bias += attn_mask
+
+        if top_k_idxs is not None:
+            attn_bias = attn_bias.expand(-1, 32, -1, -1).gather(-1, top_k_idxs.unsqueeze(-2).expand(-1, H, L, -1))
         attn_weight += attn_bias.to(attn_weight.device)
 
     attn_weight = torch.softmax(attn_weight, dim=-1)
