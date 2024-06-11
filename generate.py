@@ -217,13 +217,12 @@ def generate(
     is_speculative = draft_model is not None
     # create an empty tensor of the expected final shape and fill in the current tokens
     T = prompt.size(0)
-    T_new = T + max_new_tokens
-    print(f"Maximum context length of {T_new} tokens.")
+    max_seq_length = min(T + max_new_tokens, model.config.block_size)
     if interactive:
         max_seq_length = 350
-    else:
-        # max_seq_length = min(|prompt| + max_new_tokens, model's context window)
-        max_seq_length = min(T_new, model.config.block_size)
+    print(f"Maximum context length of {max_seq_length} tokens.")
+
+    max_new_tokens = max_seq_length - T
 
     device, dtype = prompt.device, prompt.dtype
     max_seq_length = (
@@ -261,7 +260,7 @@ def generate(
 
     # create an empty tensor (all -1) of the expected final shape and fill in the current tokens
     # GPT-Fast had this as empty but the values of empty are non-deterministic
-    empty = torch.full((T_new,), -1, dtype=dtype, device=device)
+    empty = torch.full((max_seq_length,), -1, dtype=dtype, device=device)
     empty[:T] = prompt
     seq = empty
     input_pos = torch.arange(0, T, device=device)
@@ -278,7 +277,7 @@ def generate(
 
     if is_speculative:
         input_pos = input_pos.item()  # for speculative decoding easier to keep on host
-        while input_pos < T_new - 1:
+        while input_pos < max_seq_length - 1:
             cur_token = next_token.view(())
 
             next_tokens = speculative_decode(
@@ -286,7 +285,7 @@ def generate(
             )
 
             accept_counts[len(next_tokens) - 1] += 1
-            num_added = min(T_new - input_pos - 1, len(next_tokens))
+            num_added = min(max_seq_length - input_pos - 1, len(next_tokens))
             seq[input_pos + 1 : input_pos + num_added + 1] = next_tokens[:num_added]
             for i in next_tokens[:num_added,]:
                 callback(i)
