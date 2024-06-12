@@ -146,10 +146,9 @@ if __name__ == "__main__":
     scorer = (
         AutoModelForCausalLM.from_pretrained(
             SCORER_MODEL,
-            # torch_dtype="auto",
+            torch_dtype="auto",
             attn_implementation="flash_attention_2",
             trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
         )
         .eval()
         .to("cuda")
@@ -217,7 +216,7 @@ if __name__ == "__main__":
                     max_ctx_len=args.max_ctx_len,
                     batch_size=args.batch_size,
                 )
-                
+
             else: no_rag_scores = original_scores
 
             stats.append(
