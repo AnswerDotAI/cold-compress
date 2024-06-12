@@ -191,8 +191,8 @@ def normalize_cache_length(
         assert int(max_cache_length) == max_cache_length
         max_cache_length = int(max_cache_length)
         assert (
-            max_cache_length < max_seq_length
-        ), f"Specified max cache length ({max_cache_length}) must be less than max_seq_length ({max_seq_length})."
+            max_cache_length <= max_seq_length
+        ), f"Specified max cache length ({max_cache_length}) must be <= max_seq_length ({max_seq_length})."
     return find_multiple(max_cache_length, multiple_of)
 
 
