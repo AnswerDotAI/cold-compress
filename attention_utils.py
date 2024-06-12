@@ -37,6 +37,7 @@ def scaled_dot_product_attention(
 
     top_k_idxs = None
     if attn_top_k > 0:
+        # For each head, we extract the top_k keys based on average attn_weight across queries.
         _, top_k_idxs = attn_weight.mean(dim=-2).topk(min(S, attn_top_k), dim=-1)
         value = value.gather(-2, top_k_idxs.unsqueeze(-1).expand(-1, -1, -1, value.shape[-1]))
         attn_weight = attn_weight.gather(-1, top_k_idxs.unsqueeze(-2).expand(-1, -1, attn_weight.shape[-2], -1))
