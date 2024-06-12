@@ -10,5 +10,7 @@ nltk
 sentencepiece
 rouge-score
 ruff
+scipy
 tiktoken
+wandb
 git+https://github.com/google-research/bleurt.git

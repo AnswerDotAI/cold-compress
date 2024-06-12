@@ -117,6 +117,12 @@ Question:
             "Rouge": AutoMetric.from_name("rouge"),
         }
 
+    def form_prompt(self, **kwargs):
+        """Afer the data has been prepared we can use the template to pull out context and question."""
+        return self.prompt_template.format(
+            story=kwargs["context"], question=kwargs["question"]
+        )
+
     def prepare_row(self, row: dict):
         story = row["document"].strip()
         questions = row["questions"]
@@ -309,7 +315,9 @@ class AutoTask:
             raise ValueError(
                 f"Task {task_name} not found. Available tasks: {TASK_MAPPING.keys()}"
             )
-        return TASK_MAPPING[task_name](**kwargs)
+        cls = TASK_MAPPING[task_name](**kwargs)
+        cls.name = task_name
+        return cls
 
 
 if __name__ == "__main__":
