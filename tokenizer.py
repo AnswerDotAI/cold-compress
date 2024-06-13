@@ -151,11 +151,23 @@ def get_tokenizer(tokenizer_model_path, model_name, is_chat=False):
     - TokenizerInterface: An instance of a tokenizer.
     """
     if "llama-3" in str(model_name).lower():
-        return Llama3ChatFormat(tokenizer_model_path) if is_chat else TiktokenWrapper(tokenizer_model_path)
+        return (
+            Llama3ChatFormat(tokenizer_model_path)
+            if is_chat
+            else TiktokenWrapper(tokenizer_model_path)
+        )
     elif "llama-2" in str(model_name).lower():
-        return Llama2ChatFormat(tokenizer_model_path) if is_chat else SentencePieceWrapper(tokenizer_model_path)
+        return (
+            Llama2ChatFormat(tokenizer_model_path)
+            if is_chat
+            else SentencePieceWrapper(tokenizer_model_path)
+        )
     else:
-        return TokenizersChatFormat(tokenizer_model_path) if is_chat else TokenizersWrapper(tokenizer_model_path)
+        return (
+            TokenizersChatFormat(tokenizer_model_path)
+            if is_chat
+            else TokenizersWrapper(tokenizer_model_path)
+        )
 
 
 Role = Literal["system", "user", "assistant"]
@@ -219,7 +231,7 @@ class TokenizersChatFormat(TokenizersWrapper):
         return self.encode_dialog_prompt(messages)
 
     def encode_dialog_prompt(self, dialog: List[Message]) -> List[int]:
-        text = self.tokenizer.apply_chat_template(dialog,
-                                                  tokenize=False,
-                                                  add_generation_prompt=True)
+        text = self.tokenizer.apply_chat_template(
+            dialog, tokenize=False, add_generation_prompt=True
+        )
         return self.encode(text)
