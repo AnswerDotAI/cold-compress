@@ -88,7 +88,31 @@ class TriviaQA(Benchmark):
         return ex["answer"]["aliases"]
 
 
-BENCHMARKS = {"triviaqa": TriviaQA}
+class Dolomites(Benchmark):
+    def __init__(self):
+        super().__init__("dolomites")
+        self.use_web = False
+
+    def download(self) -> Dataset:
+        return load_dataset("sarahpann/processed_dolomites")
+
+    def question(self, ex: dict) -> str:
+        return ex["input"]
+
+    def instruction(self) -> str:
+        return ""
+
+    def context(self, ex: dict) -> str:
+        return ""
+
+    def answer(self, ex: dict) -> str:
+        return ex["output"]
+
+    def get_test(self) -> Dataset:
+        return
+
+
+BENCHMARKS = {"triviaqa": TriviaQA, "dolomites": Dolomites}
 
 
 if __name__ == "__main__":
