@@ -19,16 +19,20 @@ PROMPT_TEMPLATES = {
     "triviaqa": "Compress the information in the retrieved documents into a 1-3 sentences "
     "such that it includes only information relevant to answering the question: %s\n\nRetrieved Documents:\n%s",
     "dolomites": "Compress the information in the instructions into  a 1-3 sentences "
-    "such that it includes only information relevant to completing the task: %s\n\nInstructions:\n%s"
+    "such that it includes only information relevant to completing the task: %s\n\nInstructions:\n%s",
 }
 
-SUMMARY_PREFILL = {"triviaqa": "Compressed Documents: ",
-                   "dolomites": "Compressed Instructions: ",}
+SUMMARY_PREFILL = {
+    "triviaqa": "Compressed Documents: ",
+    "dolomites": "Compressed Instructions: ",
+}
 
-SCORE_PREFILL = {"triviaqa": "The answer is",
-                 "dolomites": "The completed task is",}
+SCORE_PREFILL = {
+    "triviaqa": "The answer is",
+    "dolomites": "The completed task is",
+}
 
-LONGCONTEXT_DATASETS = ["dolomites"] # no RAG will be the same as original
+LONGCONTEXT_DATASETS = ["dolomites"]  # no RAG will be the same as original
 
 # We will evaluate each summary based on if it improves downstream performance:
 # p(answer|question, summarized context) minus either p(answer|original context) or p(answer|question)
@@ -38,7 +42,15 @@ SCORER_MODEL = (
 
 
 def compute_likelihoods(
-    args, ctx, q, answers, instruction, tokenizer, scorer, max_ctx_len=None, batch_size=8
+    args,
+    ctx,
+    q,
+    answers,
+    instruction,
+    tokenizer,
+    scorer,
+    max_ctx_len=None,
+    batch_size=8,
 ):
     # We need enough tokens for the instruction, question, and answer (subtract max context by 1024 to be safe)
     max_ctx_len = max_ctx_len or tokenizer.model_max_length - 1024
@@ -167,11 +179,13 @@ if __name__ == "__main__":
         ctx_toks = len(ctx.split(" "))
 
         if ctx_toks < args.min_toks and args.dataset not in LONGCONTEXT_DATASETS:
-            summary = ctx            
+            summary = ctx
         else:
             prompt = PROMPT_TEMPLATES[args.dataset] % (q, ctx)
 
-            summary = chat(prompt, prefill=SUMMARY_PREFILL[args.dataset]).content[0].text
+            summary = (
+                chat(prompt, prefill=SUMMARY_PREFILL[args.dataset]).content[0].text
+            )
 
             assert summary.startswith(SUMMARY_PREFILL[args.dataset])
             summary = summary[len(SUMMARY_PREFILL[args.dataset]) :].strip()
@@ -217,7 +231,8 @@ if __name__ == "__main__":
                     batch_size=args.batch_size,
                 )
 
-            else: no_rag_scores = original_scores
+            else:
+                no_rag_scores = original_scores
 
             stats.append(
                 {

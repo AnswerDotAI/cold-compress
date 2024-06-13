@@ -109,11 +109,10 @@ class Dolomites(Benchmark):
         return ex["output"]
 
     def get_test(self) -> Dataset:
-        return 
+        return
 
 
-BENCHMARKS = {"triviaqa": TriviaQA,
-              "dolomites": Dolomites}
+BENCHMARKS = {"triviaqa": TriviaQA, "dolomites": Dolomites}
 
 
 if __name__ == "__main__":
