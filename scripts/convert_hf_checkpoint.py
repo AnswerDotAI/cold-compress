@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 import torch
+from safetensors.torch import load_file
 
 # support running without installing as a package
 wd = Path(__file__).parent.parent.resolve()
@@ -62,17 +63,27 @@ def convert_hf_checkpoint(
     if not is_llama3:
         model_map_json = checkpoint_dir / "pytorch_model.bin.index.json"
 
-        assert model_map_json.is_file()
-
-        with open(model_map_json) as json_map:
-            bin_index = json.load(json_map)
-
+        if model_map_json.is_file():
+            # For larger models, the weights are stored in separate files, so we need to load the index.
+            with open(model_map_json) as json_map:
+                bin_index = json.load(json_map)
+            bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
+        else:
+            # For smaller models, the weights are stored in a single file.
+            # Note it could be a bin file or a safetensors file.
+            if (checkpoint_dir / "pytorch_model.bin").exists():
+                bin_files = {checkpoint_dir / "pytorch_model.bin"}
+            else:
+                bin_files = {checkpoint_dir / "model.safetensors"}
         weight_map = {
             "model.embed_tokens.weight": "tok_embeddings.weight",
             "model.layers.{}.self_attn.q_proj.weight": "layers.{}.attention.wq.weight",
             "model.layers.{}.self_attn.k_proj.weight": "layers.{}.attention.wk.weight",
             "model.layers.{}.self_attn.v_proj.weight": "layers.{}.attention.wv.weight",
             "model.layers.{}.self_attn.o_proj.weight": "layers.{}.attention.wo.weight",
+            "model.layers.{}.self_attn.q_proj.bias": "layers.{}.attention.wq.bias",
+            "model.layers.{}.self_attn.k_proj.bias": "layers.{}.attention.wk.bias",
+            "model.layers.{}.self_attn.v_proj.bias": "layers.{}.attention.wv.bias",
             "model.layers.{}.self_attn.rotary_emb.inv_freq": None,
             "model.layers.{}.mlp.gate_proj.weight": "layers.{}.feed_forward.w1.weight",
             "model.layers.{}.mlp.up_proj.weight": "layers.{}.feed_forward.w3.weight",
@@ -82,7 +93,6 @@ def convert_hf_checkpoint(
             "model.norm.weight": "norm.weight",
             "lm_head.weight": "output.weight",
         }
-        bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
     else:
         # There is no separate pytorch_model.bin.index.json file for llama3.
         # Instead, we will just use all original/consolidated.NN.pth files.
@@ -92,8 +102,7 @@ def convert_hf_checkpoint(
         pattern = re.compile(r"^consolidated\.\d{2}\.pth$")
         bin_files = {bin for bin in original_dir.iterdir() if pattern.match(bin.name)}
 
-    def permute(w, n_head):
-        dim = config.dim
+    def permute(w, n_head, dim=config.dim):
         return (
             w.view(n_head, 2, config.head_dim // 2, dim)
             .transpose(1, 2)
@@ -102,9 +111,12 @@ def convert_hf_checkpoint(
 
     merged_result = {}
     for file in sorted(bin_files):
-        state_dict = torch.load(
-            str(file), map_location="cpu", mmap=True, weights_only=True
-        )
+        if str(file).endswith(".safetensors"):
+            state_dict = load_file(str(file))
+        else:
+            state_dict = torch.load(
+                str(file), map_location="cpu", mmap=True, weights_only=True
+            )
         merged_result.update(state_dict)
     final_result = {}
     if weight_map is not None:
@@ -126,12 +138,20 @@ def convert_hf_checkpoint(
                 q = final_result[key]
                 k = final_result[key.replace("wq", "wk")]
                 v = final_result[key.replace("wq", "wv")]
-                q = permute(q, config.n_head)
-                k = permute(k, config.n_local_heads)
+                if key.endswith("weight"):
+                    q = permute(q, config.n_head)
+                    k = permute(k, config.n_local_heads)
+                else:
+                    # Permute bias to be compatible with the weight permutation
+                    q = permute(q, config.n_head, dim=1).view(-1)
+                    k = permute(k, config.n_local_heads, dim=1).view(-1)
                 final_result[key.replace("wq", "wqkv")] = torch.cat([q, k, v])
                 del final_result[key]
                 del final_result[key.replace("wq", "wk")]
                 del final_result[key.replace("wq", "wv")]
+        if "output.weight" not in final_result:
+            # lm_head.weight may not be explicitly stored in the HF checkpoint if input and output embeddings are shared
+            final_result["output.weight"] = final_result["tok_embeddings.weight"].clone()
     else:
         final_result = merged_result
     if is_llama3:
@@ -162,11 +182,11 @@ if __name__ == "__main__":
     )
 
     # Remove unused files
-    shutil.rmtree(args.checkpoint_dir / "original", ignore_errors=True)
+    # shutil.rmtree(args.checkpoint_dir / "original", ignore_errors=True)
 
     # remove any files in args.checkpoint_dir not named model.pth or tokenizer.model
-    for file in args.checkpoint_dir.iterdir():
-        if file.is_file() and file.name not in ["model.pth", "tokenizer.model"]:
-            os.remove(file)
-        else:
-            shutil.rmtree(file, ignore_errors=True)
+    # for file in args.checkpoint_dir.iterdir():
+    #     if file.is_file() and file.name not in ["model.pth", "tokenizer.model"]:
+    #         os.remove(file)
+    #     else:
+    #         shutil.rmtree(file, ignore_errors=True)

@@ -3,6 +3,7 @@ import os
 import sentencepiece as spm
 import tiktoken
 from tiktoken.load import load_tiktoken_bpe
+from transformers import AutoTokenizer
 from pathlib import Path
 from typing import (
     Dict,
@@ -29,11 +30,15 @@ class TokenizerInterface:
     def eos_id(self):
         raise NotImplementedError("This method should be overridden by subclasses.")
 
+    def get_terminator_ids(self):
+        raise NotImplementedError("This method should be overridden by subclasses.")
+
 
 class SentencePieceWrapper(TokenizerInterface):
     def __init__(self, model_path):
         super().__init__(model_path)
         self.processor = spm.SentencePieceProcessor(str(model_path))
+        self.terminator_ids = [self.processor.eos_id()]
 
     def encode(self, text):
         return self.processor.EncodeAsIds(text)
@@ -46,6 +51,9 @@ class SentencePieceWrapper(TokenizerInterface):
 
     def eos_id(self):
         return self.processor.eos_id()
+
+    def get_terminator_ids(self):
+        return self.terminator_ids
 
 
 class TiktokenWrapper(TokenizerInterface):
@@ -91,6 +99,7 @@ class TiktokenWrapper(TokenizerInterface):
         # BOS / EOS token IDs
         self._bos_id: int = self.special_tokens["<|begin_of_text|>"]
         self._eos_id: int = self.special_tokens["<|end_of_text|>"]
+        self.terminator_ids = [self._eos_id, self.special_tokens["<|eot_id|>"]]
 
     def encode(self, text):
         return self.model.encode(text)
@@ -104,8 +113,33 @@ class TiktokenWrapper(TokenizerInterface):
     def eos_id(self):
         return self._eos_id
 
+    def get_terminator_ids(self):
+        return self.terminator_ids
 
-def get_tokenizer(tokenizer_model_path, model_name):
+
+class TokenizersWrapper(TokenizerInterface):
+    def __init__(self, model_path):
+        super().__init__(model_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.terminator_ids = [self.tokenizer.eos_token_id]
+
+    def encode(self, text):
+        return self.tokenizer.encode(text, add_special_tokens=False)
+
+    def decode(self, tokens):
+        return self.tokenizer.decode(tokens)
+
+    def bos_id(self):
+        return self.tokenizer.bos_token_id
+
+    def eos_id(self):
+        return self.tokenizer.eos_token_id
+
+    def get_terminator_ids(self):
+        return self.terminator_ids
+
+
+def get_tokenizer(tokenizer_model_path, model_name, is_chat=False):
     """
     Factory function to get the appropriate tokenizer based on the model name.
 
@@ -116,10 +150,12 @@ def get_tokenizer(tokenizer_model_path, model_name):
     Returns:
     - TokenizerInterface: An instance of a tokenizer.
     """
-    if "Llama-3" in str(model_name):
-        return TiktokenWrapper(tokenizer_model_path)
+    if "llama-3" in str(model_name).lower():
+        return Llama3ChatFormat(tokenizer_model_path) if is_chat else TiktokenWrapper(tokenizer_model_path)
+    elif "llama-2" in str(model_name).lower():
+        return Llama2ChatFormat(tokenizer_model_path) if is_chat else SentencePieceWrapper(tokenizer_model_path)
     else:
-        return SentencePieceWrapper(tokenizer_model_path)
+        return TokenizersChatFormat(tokenizer_model_path) if is_chat else TokenizersWrapper(tokenizer_model_path)
 
 
 Role = Literal["system", "user", "assistant"]
@@ -130,16 +166,16 @@ class Message(TypedDict):
     content: str
 
 
-class Llama3ChatFormat:
-    def __init__(self, tokenizer: TiktokenWrapper):
-        self.tokenizer = tokenizer
+class Llama3ChatFormat(TiktokenWrapper):
+    def __init__(self, model_path):
+        super().__init__(model_path)
 
     def encode_header(self, message: Message) -> List[int]:
         return [
-            self.tokenizer.special_tokens["<|start_header_id|>"],
-            *self.tokenizer.encode(message["role"]),
-            self.tokenizer.special_tokens["<|end_header_id|>"],
-            *self.tokenizer.encode("\n\n"),
+            self.special_tokens["<|start_header_id|>"],
+            self.encode(message["role"]),
+            self.special_tokens["<|end_header_id|>"],
+            self.encode("\n\n"),
         ]
 
     def encode_prompt(self, prompt: str):
@@ -147,28 +183,43 @@ class Llama3ChatFormat:
 
     def encode_message(self, message: Message) -> List[int]:
         tokens = self.encode_header(message)
-        tokens.extend(self.tokenizer.encode(message["content"].strip()))
-        tokens.append(self.tokenizer.special_tokens["<|eot_id|>"])
+        tokens.extend(self.encode(message["content"].strip()))
+        tokens.append(self.special_tokens["<|eot_id|>"])
         return tokens
 
     def encode_dialog_prompt(self, dialog: List[Message]) -> List[int]:
         return [
-            self.tokenizer.special_tokens["<|begin_of_text|>"],
+            self.special_tokens["<|begin_of_text|>"],
             *list(itertools.chain(*map(self.encode_message, dialog))),
             # Add the start of an assistant message for the model to complete.
             *self.encode_header({"role": "assistant", "content": ""}),
         ]
 
 
-class Llama2ChatFormat:
+class Llama2ChatFormat(SentencePieceWrapper):
     B_INST = "[INST]"
     E_INST = "[/INST]"
 
-    def __init__(self, tokenizer: SentencePieceWrapper):
-        self.tokenizer = tokenizer
+    def __init__(self, model_path):
+        super().__init__(model_path)
 
     def encode_prompt(self, prompt: str):
-        ids = [self.tokenizer.bos_id()]
-        ids += self.tokenizer.encode(Llama2ChatFormat.B_INST + "\n\n")
-        ids += self.tokenizer.encode(prompt + " " + Llama2ChatFormat.E_INST)
+        ids = [self.bos_id()]
+        ids += self.encode(Llama2ChatFormat.B_INST + "\n\n")
+        ids += self.encode(prompt + " " + Llama2ChatFormat.E_INST)
         return ids
+
+
+class TokenizersChatFormat(TokenizersWrapper):
+    def __init__(self, model_path):
+        super().__init__(model_path)
+
+    def encode_prompt(self, prompt: str):
+        messages = [{"role": "user", "content": prompt}]
+        return self.encode_dialog_prompt(messages)
+
+    def encode_dialog_prompt(self, dialog: List[Message]) -> List[int]:
+        text = self.tokenizer.apply_chat_template(dialog,
+                                                  tokenize=False,
+                                                  add_generation_prompt=True)
+        return self.encode(text)
