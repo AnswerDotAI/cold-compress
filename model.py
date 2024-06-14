@@ -103,6 +103,7 @@ transformer_configs = {
         dim=4096,
         intermediate_size=14336,
         vocab_size=128256,
+        rope_base=500000
     ),
     "Meta-Llama-3-8B-Instruct-4-Layers": dict(
         block_size=8192,
@@ -112,6 +113,7 @@ transformer_configs = {
         dim=4096,
         intermediate_size=14336,
         vocab_size=128256,
+        rope_base=500000
     ),
     "Qwen2-1.5B-Instruct": dict(
         block_size=32768,

@@ -262,9 +262,8 @@ def generate(
 
     # create an empty tensor (all -1) of the expected final shape and fill in the current tokens
     # GPT-Fast had this as empty but the values of empty are non-deterministic
-    empty = torch.full((max_seq_length,), -1, dtype=dtype, device=device)
-    empty[:T] = prompt
-    seq = empty
+    seq = torch.full((max_seq_length,), -1, dtype=dtype, device=device)
+    seq[:T] = prompt
     input_pos = torch.arange(0, T, device=device)
 
     next_token = prefill(
@@ -535,7 +534,6 @@ def main(
         device_sync(device=device)  # MKG
         t = time.perf_counter() - t0
 
-        y_str = tokenizer.decode(y.tolist())
         if not interactive:
             print(tokenizer.decode(y.tolist()))
         else:
@@ -598,7 +596,7 @@ if __name__ == "__main__":
         "--checkpoint_path",
         type=Path,
         default=Path(__file__).resolve().parent
-        / "checkpoints/meta-llama/Llama-2-7b-chat-hf/model.pth",
+        / "checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth",
         help="Model checkpoint path.",
     )
     parser.add_argument(

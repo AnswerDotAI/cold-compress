@@ -87,12 +87,13 @@ class KVCache(ABC, nn.Module):
     def _compress_prompt_w_recent_global(self, input_pos, k_val, v_val, attn):
         # [global; ...; window - global] --> [global; window - global]
         # Indices for first global_tokens tokens and last (window - global_tokens) tokens
-        keep_idxs = list(range(self.global_tokens)) + list(
+        # Making this a tensor seems to give a speedup, but I haven't fully benchmarked
+        keep_idxs = torch.tensor(list(range(self.global_tokens)) + list(
             range(
                 input_pos.shape[0] - self.max_cache_length + self.global_tokens,
                 input_pos.shape[0],
             )
-        )
+        ), dtype=torch.long, device=k_val.device)
         assert len(keep_idxs) == self.max_cache_length
         k_val = k_val[:, :, keep_idxs]
         v_val = v_val[:, :, keep_idxs]
@@ -217,8 +218,9 @@ class KVCache(ABC, nn.Module):
 
         # Assert all positions are unfilled - remove for speed
         if self.insertions < self.max_cache_length:
+            slice = self.pos[:, :, start:end]
             assert (
-                torch.min(self.pos[:, :, start:end]) == -1
+                torch.min(slice) == -1 and torch.max(slice) == -1
             ), "Trying to fill already filled positions during prefill."
         self.pos[:, :, start:end] = input_pos.int()
         self.k_cache[:, :, start:end, :] = k_val
