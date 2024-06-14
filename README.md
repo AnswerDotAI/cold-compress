@@ -17,8 +17,8 @@ For an in-depth walkthrough of what's in this codebase, see this [blog post](htt
 ## Installation
 [Download PyTorch nightly](https://pytorch.org/get-started/locally/)
 ```bash
-pip install packaging
-pip install flash-attn --no-build-isolation
+pip install packaging ninja
+MAX_JOBS=8 pip install flash-attn --no-build-isolation # Set MAX_JOBS to a lower value if you get OOM errors.
 pip install -r requirements.txt
 ```
 
