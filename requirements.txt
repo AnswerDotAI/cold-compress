@@ -5,3 +5,6 @@ huggingface_hub
 sentencepiece
 tiktoken
 ruff
+evaluate
+bert-score
+git+https://github.com/google-research/bleurt.git
