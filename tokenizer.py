@@ -185,9 +185,9 @@ class Llama3ChatFormat(TiktokenWrapper):
     def encode_header(self, message: Message) -> List[int]:
         return [
             self.special_tokens["<|start_header_id|>"],
-            self.encode(message["role"]),
+            *self.encode(message["role"]),
             self.special_tokens["<|end_header_id|>"],
-            self.encode("\n\n"),
+            *self.encode("\n\n"),
         ]
 
     def encode_prompt(self, prompt: str):

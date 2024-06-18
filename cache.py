@@ -88,12 +88,17 @@ class KVCache(ABC, nn.Module):
         # [global; ...; window - global] --> [global; window - global]
         # Indices for first global_tokens tokens and last (window - global_tokens) tokens
         # Making this a tensor seems to give a speedup, but I haven't fully benchmarked
-        keep_idxs = torch.tensor(list(range(self.global_tokens)) + list(
-            range(
-                input_pos.shape[0] - self.max_cache_length + self.global_tokens,
-                input_pos.shape[0],
-            )
-        ), dtype=torch.long, device=k_val.device)
+        keep_idxs = torch.tensor(
+            list(range(self.global_tokens))
+            + list(
+                range(
+                    input_pos.shape[0] - self.max_cache_length + self.global_tokens,
+                    input_pos.shape[0],
+                )
+            ),
+            dtype=torch.long,
+            device=k_val.device,
+        )
         assert len(keep_idxs) == self.max_cache_length
         k_val = k_val[:, :, keep_idxs]
         v_val = v_val[:, :, keep_idxs]
