@@ -3,7 +3,6 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-import itertools
 import sys
 import time
 from pathlib import Path
@@ -35,7 +34,6 @@ default_device = "cuda" if torch.cuda.is_available() else "cpu"
 wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
-from model import Transformer, find_multiple
 from tokenizer import get_tokenizer
 from generate import _load_model, generate, encode_tokens
 from task import TASK_MAPPING, AutoTask
@@ -100,9 +98,9 @@ def main(
             "tokens_per_sec": [],
             "accept_counts": [],
         }
-        start = 0
         predictions = []
-        for prompt in tqdm(task.get_eval_prompts()):
+        for row in tqdm(task.get_test()):
+            prompt = row["prompt"]
             if is_chat:
                 tokens = tokenizer.encode_prompt(prompt)
                 encoded = torch.tensor(tokens, dtype=torch.int, device=device)
@@ -157,14 +155,16 @@ def main(
         task_metrics[task_name]["tokens_per_sec"] = torch.mean(
             torch.tensor(aggregate_metrics["tokens_per_sec"])
         ).item()
-        task_metrics[task_name]["task_metrics"] = task.compute_metrics(predictions)
+        task_metrics[task_name]["task_metrics"] = task.test_metrics(predictions)
         print(task_metrics[task_name]["task_metrics"])
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Your CLI description.")
+    parser = argparse.ArgumentParser(
+        description="Evaluation script for different KV-Cache Compression Algorithms."
+    )
 
     parser.add_argument(
         "--tasks",
