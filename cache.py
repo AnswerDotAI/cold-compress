@@ -1,3 +1,4 @@
+import os
 from abc import ABC, abstractmethod
 
 import torch
@@ -222,11 +223,11 @@ class KVCache(ABC, nn.Module):
             start, end = self.insertions, self.insertions + num_new_insertions
 
         # Assert all positions are unfilled - remove for speed
-        if self.insertions < self.max_cache_length:
-            slice = self.pos[:, :, start:end]
-            assert (
-                torch.min(slice) == -1 and torch.max(slice) == -1
-            ), "Trying to fill already filled positions during prefill."
+        # if self.insertions < self.max_cache_length:
+        #     slice = self.pos[:, :, start:end]
+        #     assert (
+        #         torch.min(slice) == -1 and torch.max(slice) == -1
+        #     ), "Trying to fill already filled positions during prefill."
         self.pos[:, :, start:end] = input_pos.int()
         self.k_cache[:, :, start:end, :] = k_val
         self.v_cache[:, :, start:end, :] = v_val
