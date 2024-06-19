@@ -1,7 +1,9 @@
+Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+
+### Instruction:
 Carefully read the beginning of the Wikipedia page on the Guggenheim meseum. You will be asked to answer a question at the end.
 
-# Introduction
-
+## Introduction
 The Solomon R. Guggenheim Museum, often referred to as The Guggenheim, is an art museum at 1071 Fifth Avenue between 88th and 89th Streets on the Upper East Side of Manhattan in New York City. It hosts a permanent collection of Impressionist, Post-Impressionist, early Modern, and contemporary art and also features special exhibitions throughout the year. It was established by the Solomon R. Guggenheim Foundation in 1939 as the Museum of Non-Objective Painting, under the guidance of its first director, Hilla von Rebay. The museum adopted its current name in 1952, three years after the death of its founder Solomon R. Guggenheim. It continues to be operated and owned by the Solomon R. Guggenheim Foundation.
 The museum's building, a landmark work of 20th-century architecture designed by Frank Lloyd Wright, drew controversy for the unusual shape of its display spaces and took 15 years to design and build; it was completed in 1959. It consists of a six-story, bowl-shaped main gallery to the south, a four-story "monitor" to the north, and a ten-story annex to the northeast. A six-story helical ramp extends along the main gallery's perimeter, under a central ceiling skylight. The Thannhauser Collection is housed within the top three stories of the monitor, and there are additional galleries in the annex and a learning center in the basement. The museum building's design was controversial when it was completed but was widely praised afterward. The building underwent extensive renovations from 1990 to 1992, when the annex was built, and it was renovated again from 2005 to 2008.
 The museum's collection has grown over the decades and is founded upon several important private collections, including those of Guggenheim, Karl Nierendorf, Katherine Sophie Dreier, Justin Thannhauser, Rebay, Giuseppe Panza, Robert Mapplethorpe, and the Bohen Foundation. The collection, which includes around 8,000 works as of 2022, is shared with sister museums in Bilbao, Spain, and Venice, Italy. In 2023, nearly 861,000 people visited the museum.
@@ -17,8 +19,11 @@ In 1943, Rebay and Guggenheim wrote a letter to Frank Lloyd Wright asking him to
 Rebay envisioned a space that would facilitate a new way of seeing modern art. She wrote Wright that "each of these great masterpieces should be organized into space, and only you ... would test the possibilities to do so. ... I want a temple of spirit, a monument!" Critic Paul Goldberger later wrote that Wright's modernist building was a catalyst for change, making it "socially and culturally acceptable for an architect to design a highly expressive, intensely personal museum. In this sense almost every museum of our time is a child of the Guggenheim." The Guggenheim is the only museum Wright designed; its urban location required him to design it in a vertical rather than horizontal form, far different from his earlier, rural works. Since he was not licensed as an architect in New York, he relied on Arthur Cort Holden, of the architectural firm Holden, McLaughlin & Associates, to deal with New York City's Board of Standards and Appeals.
 From 1943 to early 1944, Wright produced four differing designs. One had a hexagonal shape and level floors for the galleries, though all the others had circular schemes and used a ramp continuing around the building. In his notes, he indicated that he wanted a "well proportioned floor space from bottom to top—a wheel chair going around and up and down". His original concept was called an inverted "ziggurat", because it resembled the steep steps on the ziggurats built in ancient Mesopotamia. Several architecture professors have speculated that the helical ramp and glass dome of Giuseppe Momo's 1932 staircase at the Vatican Museums was an inspiration for Wright's ramp and atrium.
 
+### Input:
 Question: Which is the largest number?
 A) Frank Lloyd Wright's age in 1943.
 B) The size of the collection at the Guggenheim.
 C) The building number of the museum's first venue.
 D) The number of sketches it took Frank Lloyd Wright to create the museum.
+
+<|gist|>### Response:

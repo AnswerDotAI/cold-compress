@@ -30,6 +30,8 @@ def scaled_dot_product_attention(
             is_causal=is_causal,
             scale=scale,
         ), None
+    
+    print("Spose we won't be here?")
     B, L, S = query.size(0), query.size(-2), key.size(-2)
     scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
     attn_weight = query @ key.transpose(-2, -1) * scale_factor

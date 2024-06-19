@@ -12,19 +12,21 @@ from pathlib import Path
 from typing import Optional
 
 import torch
+from safetensors.torch import load_file
 
 # support running without installing as a package
 wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
 from model import ModelArgs
+from safetensors.torch import load_file
 
 
 @torch.inference_mode()
 def convert_hf_checkpoint(
     *,
     checkpoint_dir: Path = Path(
-        "checkpoints/meta-Transformer/Transformer-2-7b-chat-hf"
+        "checkpoints/usvsnsp/Meta-Llama-3-8B-gist-finetune"
     ),
     model_name: Optional[str] = None,
 ) -> None:
@@ -42,7 +44,8 @@ def convert_hf_checkpoint(
     # weights is state dict are the same in each consolidated.NN.pth file. Thus, it is not
     # currently supported.
     # Along this, we need to copy the original/tokenizer.model file to tokenizer.model.tiktoken
-    is_llama3 = "Llama-3" in model_name
+    is_llama3 = "Llama-3" in model_name and "usvsnsp" not in model_name
+
     if is_llama3:
         # Check if we have multiple original/consolidated.NN.pth files and report error
         # if we do for Llama 3.
@@ -60,19 +63,29 @@ def convert_hf_checkpoint(
 
     # Load the json file containing weight mapping
     if not is_llama3:
-        model_map_json = checkpoint_dir / "pytorch_model.bin.index.json"
+        model_map_json = checkpoint_dir / "model.safetensors.index.json"
 
-        assert model_map_json.is_file()
-
-        with open(model_map_json) as json_map:
-            bin_index = json.load(json_map)
-
+        if model_map_json.is_file():
+            # For larger models, the weights are stored in separate files, so we need to load the index.
+            with open(model_map_json) as json_map:
+                bin_index = json.load(json_map)
+            bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
+        else:
+            # For smaller models, the weights are stored in a single file.
+            # Note it could be a bin file or a safetensors file.
+            if (checkpoint_dir / "pytorch_model.bin").exists():
+                bin_files = {checkpoint_dir / "pytorch_model.bin"}
+            else:
+                bin_files = {checkpoint_dir / "model.safetensors"}
         weight_map = {
             "model.embed_tokens.weight": "tok_embeddings.weight",
             "model.layers.{}.self_attn.q_proj.weight": "layers.{}.attention.wq.weight",
             "model.layers.{}.self_attn.k_proj.weight": "layers.{}.attention.wk.weight",
             "model.layers.{}.self_attn.v_proj.weight": "layers.{}.attention.wv.weight",
             "model.layers.{}.self_attn.o_proj.weight": "layers.{}.attention.wo.weight",
+            "model.layers.{}.self_attn.q_proj.bias": "layers.{}.attention.wq.bias",
+            "model.layers.{}.self_attn.k_proj.bias": "layers.{}.attention.wk.bias",
+            "model.layers.{}.self_attn.v_proj.bias": "layers.{}.attention.wv.bias",
             "model.layers.{}.self_attn.rotary_emb.inv_freq": None,
             "model.layers.{}.mlp.gate_proj.weight": "layers.{}.feed_forward.w1.weight",
             "model.layers.{}.mlp.up_proj.weight": "layers.{}.feed_forward.w3.weight",
@@ -82,7 +95,6 @@ def convert_hf_checkpoint(
             "model.norm.weight": "norm.weight",
             "lm_head.weight": "output.weight",
         }
-        bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
     else:
         # There is no separate pytorch_model.bin.index.json file for llama3.
         # Instead, we will just use all original/consolidated.NN.pth files.
@@ -92,8 +104,7 @@ def convert_hf_checkpoint(
         pattern = re.compile(r"^consolidated\.\d{2}\.pth$")
         bin_files = {bin for bin in original_dir.iterdir() if pattern.match(bin.name)}
 
-    def permute(w, n_head):
-        dim = config.dim
+    def permute(w, n_head, dim=config.dim):
         return (
             w.view(n_head, 2, config.head_dim // 2, dim)
             .transpose(1, 2)
@@ -102,9 +113,12 @@ def convert_hf_checkpoint(
 
     merged_result = {}
     for file in sorted(bin_files):
-        state_dict = torch.load(
-            str(file), map_location="cpu", mmap=True, weights_only=True
-        )
+        if str(file).endswith(".safetensors"):
+            state_dict = load_file(str(file))
+        else:
+            state_dict = torch.load(
+                str(file), map_location="cpu", mmap=True, weights_only=True
+            )
         merged_result.update(state_dict)
     final_result = {}
     if weight_map is not None:
@@ -126,12 +140,20 @@ def convert_hf_checkpoint(
                 q = final_result[key]
                 k = final_result[key.replace("wq", "wk")]
                 v = final_result[key.replace("wq", "wv")]
-                q = permute(q, config.n_head)
-                k = permute(k, config.n_local_heads)
+                if key.endswith("weight"):
+                    q = permute(q, config.n_head)
+                    k = permute(k, config.n_local_heads)
+                else:
+                    # Permute bias to be compatible with the weight permutation
+                    q = permute(q, config.n_head, dim=1).view(-1)
+                    k = permute(k, config.n_local_heads, dim=1).view(-1)
                 final_result[key.replace("wq", "wqkv")] = torch.cat([q, k, v])
                 del final_result[key]
                 del final_result[key.replace("wq", "wk")]
                 del final_result[key.replace("wq", "wv")]
+        if "output.weight" not in final_result:
+            # lm_head.weight may not be explicitly stored in the HF checkpoint if input and output embeddings are shared
+            final_result["output.weight"] = final_result["tok_embeddings.weight"].clone()
     else:
         final_result = merged_result
     if is_llama3:
@@ -140,6 +162,14 @@ def convert_hf_checkpoint(
         tokenizer_model_tiktoken = checkpoint_dir / "tokenizer.model"
         print(f"Copying {tokenizer_model} to {tokenizer_model_tiktoken}")
         shutil.copy(tokenizer_model, tokenizer_model_tiktoken)
+    
+    elif "Llama-3" in model_name:
+        path = hf_hub_download(
+            repo_id = "meta-llama/Meta-Llama-3-8B",
+            filename="tokenizer.model",
+            subfolder="original",
+        )
+        shutil.copy(path, checkpoint_dir / "tokenizer.model")
     print(f"Saving checkpoint to {checkpoint_dir / 'model.pth'}")
     torch.save(final_result, out_model_path)
 
@@ -151,9 +181,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoint_dir",
         type=Path,
-        default=Path("checkpoints/meta-llama/llama-2-7b-chat-hf"),
+        default=Path("checkpoints/usvsnsp/Meta-Llama-3-8B-gist-finetune"),
     )
-    parser.add_argument("--model_name", type=str, default=None)
+    parser.add_argument("--model_name", type=str, default="usvsnsp/Meta-Llama-3-8B-gist-finetune")
 
     args = parser.parse_args()
     convert_hf_checkpoint(
@@ -162,11 +192,11 @@ if __name__ == "__main__":
     )
 
     # Remove unused files
-    shutil.rmtree(args.checkpoint_dir / "original", ignore_errors=True)
+    # shutil.rmtree(args.checkpoint_dir / "original", ignore_errors=True)
 
     # remove any files in args.checkpoint_dir not named model.pth or tokenizer.model
-    for file in args.checkpoint_dir.iterdir():
-        if file.is_file() and file.name not in ["model.pth", "tokenizer.model"]:
-            os.remove(file)
-        else:
-            shutil.rmtree(file, ignore_errors=True)
+    # for file in args.checkpoint_dir.iterdir():
+    #     if file.is_file() and file.name not in ["model.pth", "tokenizer.model"]:
+    #         os.remove(file)
+    #     else:
+    #         shutil.rmtree(file, ignore_errors=True)

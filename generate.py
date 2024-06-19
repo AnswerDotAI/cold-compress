@@ -34,7 +34,7 @@ wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
 from model import Transformer, find_multiple
-from tokenizer import Llama3ChatFormat, Llama2ChatFormat, get_tokenizer
+from tokenizer import get_tokenizer
 
 
 def multinomial_sample_one_no_sync(
@@ -55,23 +55,32 @@ def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = Non
     return probs
 
 
-def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
-    probs = logits_to_probs(logits[0, -1], temperature, top_k)
+def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None, ignore_gist: bool = True):
+    next_logits = logits[0, -1]
+    if ignore_gist:
+        next_logits[-1] = 0
+    probs = logits_to_probs(next_logits, temperature, top_k)
     idx_next = multinomial_sample_one_no_sync(probs)
     return idx_next, probs
 
+def get_mask(input_ids: torch.Tensor, input_pos: torch.Tensor, gist_token_id: int):
+    causal_mask = (
+        torch.tril(torch.ones(len(input_pos), len(input_pos), dtype=torch.bool))
+        .unsqueeze(0)
+        .unsqueeze(0)
+        .to(input_ids.device)
+    )
+    gist_token_positions = torch.stack(torch.where(input_ids == gist_token_id)).T
+    for position in gist_token_positions:
+        causal_mask[position[0], :, position[1] + 1:, :position[1]] = False
+    
+    return causal_mask
 
 def prefill(
     model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs
 ) -> torch.Tensor:
     # input_pos: [B, S]
-    causal_mask = (
-        torch.tril(torch.ones(len(input_pos), len(input_pos), dtype=torch.bool))
-        .unsqueeze(0)
-        .unsqueeze(0)
-        .to(x.device)
-    )
-    logits = model(x, input_pos, mask=causal_mask)
+    logits = model(x, input_pos, mask=get_mask(x, input_pos, 128256))
     return sample(logits, **sampling_kwargs)[0]
 
 
@@ -80,7 +89,7 @@ def decode_one_token(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     # input_pos: [B, 1]
     assert input_pos.shape[-1] == 1
-    logits = model(x, input_pos)
+    logits = model(x, input_pos, mask=get_mask(x, input_pos, 128256))
     return sample(logits, **sampling_kwargs)
 
 
@@ -115,7 +124,7 @@ def decode_n_tokens(
 
 
 def model_forward(model, x, input_pos):
-    return model(x, input_pos)
+    return model(x, input_pos, mask=get_mask(x, input_pos, 128256))
 
 
 def speculative_decode(
@@ -195,7 +204,7 @@ def normalize_cache_length(
                 f"Warning: max_cache_length ({max_cache_length}) is greater than max_seq_length ({max_seq_length}). Setting to {max_seq_length}"
             )
             max_cache_length = max_seq_length
-    return find_multiple(max_cache_length, multiple_of)
+    return min(find_multiple(max_cache_length, multiple_of), max_seq_length)
 
 
 @torch.no_grad()
@@ -246,10 +255,13 @@ def generate(
     cache_kwargs["max_cache_length"] = [
         item for item in cache_kwargs["max_cache_length"] for _ in range(tile_size)
     ]
-    cache_kwargs["drop_amount"] = [
-        max(int(cache_kwargs["drop_amount"] * l), 1)
-        for l in cache_kwargs["max_cache_length"]
-    ]
+
+    # Gets called twice when model is wrapped in torch.compile which causes an error without the if statement
+    if type(cache_kwargs["drop_amount"]) != list:
+        cache_kwargs["drop_amount"] = [
+            max(int(cache_kwargs["drop_amount"] * l), 1)
+            for l in cache_kwargs["max_cache_length"]
+        ]
 
     assert cache_kwargs["global_tokens"] <= min(
         cache_kwargs["max_cache_length"]
@@ -262,9 +274,8 @@ def generate(
 
     # create an empty tensor (all -1) of the expected final shape and fill in the current tokens
     # GPT-Fast had this as empty but the values of empty are non-deterministic
-    empty = torch.full((max_seq_length,), -1, dtype=dtype, device=device)
-    empty[:T] = prompt
-    seq = empty
+    seq = torch.full((max_seq_length,), -1, dtype=dtype, device=device)
+    seq[:T] = prompt
     input_pos = torch.arange(0, T, device=device)
 
     next_token = prefill(
@@ -324,6 +335,9 @@ def _load_model(checkpoint_path, device, precision, use_tp):
     use_cuda = "cuda" in device
     with torch.device("meta"):
         model = Transformer.from_name(checkpoint_path.parent.name)
+    
+    if checkpoint_path.parent.name == 'usvsnsp':
+        return model.to_empty(device='cpu').eval()
 
     if "int8" in str(checkpoint_path):
         print("Using int8 weight-only quantization!")
@@ -345,7 +359,6 @@ def _load_model(checkpoint_path, device, precision, use_tp):
     if "model" in checkpoint and "stories" in str(checkpoint_path):
         checkpoint = checkpoint["model"]
     model.load_state_dict(checkpoint, assign=True)
-
     if use_tp:
         from tp import apply_tp
 
@@ -380,7 +393,7 @@ def main(
     top_k: int = 200,
     temperature: float = 0.8,
     checkpoint_path: Path = Path(
-        "checkpoints/meta-Transformer/Transformer-2-7b-chat-hf/model.pth"
+        "checkpoints/usvsnsp/Meta-Llama-3-8B-gist-finetune/model.pth"
     ),
     compile: bool = True,
     compile_prefill: bool = False,
@@ -388,13 +401,17 @@ def main(
     draft_checkpoint_path: Optional[Path] = None,
     speculate_k: int = 5,
     device=default_device,
+    ignore_gist: bool=False,
     cache_kwargs: dict = {},
 ) -> None:
     """Generates text samples based on a pre-trained Transformer model and tokenizer."""
-    assert checkpoint_path.is_file(), checkpoint_path
+    # assert checkpoint_path.is_file(), checkpoint_path
 
     tokenizer_path = checkpoint_path.parent / "tokenizer.model"
-    assert tokenizer_path.is_file(), str(tokenizer_path)
+    if not tokenizer_path.is_file():
+        # If there's no tokenizer.model, try to load the tokenizer from the parent directory
+        # NOTE: We assume the tokenizer in the parent directory is compatible with huggingface transformers
+        tokenizer_path = checkpoint_path.parent
 
     global print
     from tp import maybe_init_dist
@@ -412,9 +429,8 @@ def main(
     is_chat = (
         "chat" in str(checkpoint_path).lower()
         or "instruct" in str(checkpoint_path).lower()
+        and not "usvsnsp" in str(checkpoint_path).lower()
     )
-
-    is_llama2 = "llama-2" in str(checkpoint_path).lower()
 
     print("Loading model ...")
     t0 = time.time()
@@ -428,27 +444,26 @@ def main(
     device_sync(device=device)  # MKG
     print(f"Time to load model: {time.time() - t0:.02f} seconds")
 
-    tokenizer = get_tokenizer(tokenizer_path, checkpoint_path)
+    tokenizer = get_tokenizer(tokenizer_path, checkpoint_path, is_chat=is_chat)
 
     if is_chat:
-        template_cls = Llama2ChatFormat if is_llama2 else Llama3ChatFormat
-        tokens = template_cls(tokenizer).encode_prompt(prompt)
+        tokens = tokenizer.encode_prompt(prompt)
         encoded = torch.tensor(tokens, dtype=torch.int, device=device)
     else:
         encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
     prompt_length = encoded.size(0)
 
-    terminator_ids = [tokenizer.eos_id()]
-    if not is_llama2:
-        terminator_ids.append(tokenizer.special_tokens["<|eot_id|>"])
     if args.no_terminators:
         terminator_ids = None
+    else:
+        terminator_ids = tokenizer.get_terminator_ids()
 
     torch.manual_seed(1234)
     model_size = _get_model_size(model)
     print(f"{model_size / 1e9:.02f} billion parameters in model.")
 
     if compile:
+        print(is_speculative)
         if is_speculative and use_tp:  # and ("cuda" in device):
             torch._inductor.config.triton.cudagraph_trees = (
                 False  # Bug with cudagraph trees in this case
@@ -480,8 +495,10 @@ def main(
         if i >= 0 and interactive:
             prompt = input("What is your prompt? ")
             if is_chat:
-                prompt = f"{B_INST} {prompt.strip()} {E_INST}"
-            encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
+                tokens = tokenizer.encode_prompt(prompt)
+                encoded = torch.tensor(tokens, dtype=torch.int, device=device)
+            else:
+                encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
 
         if interactive and i >= 0:
             buffer = []
@@ -522,6 +539,7 @@ def main(
                 top_k=top_k,
                 terminator_ids=terminator_ids,
                 cache_kwargs=cache_kwargs,
+                ignore_gist=ignore_gist,
             )
             aggregate_metrics["accept_counts"].append(metrics["accept_counts"])
         if i == -1:
@@ -535,7 +553,6 @@ def main(
         device_sync(device=device)  # MKG
         t = time.perf_counter() - t0
 
-        y_str = tokenizer.decode(y.tolist())
         if not interactive:
             print(tokenizer.decode(y.tolist()))
         else:
@@ -582,7 +599,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_samples", type=int, default=1, help="Number of samples.")
     parser.add_argument(
-        "--max_new_tokens", type=int, default=512, help="Maximum number of new tokens."
+        "--max_new_tokens", type=int, default=1024, help="Maximum number of new tokens."
     )
     parser.add_argument("--top_k", type=int, default=200, help="Top-k for sampling.")
     parser.add_argument(
@@ -598,7 +615,7 @@ if __name__ == "__main__":
         "--checkpoint_path",
         type=Path,
         default=Path(__file__).resolve().parent
-        / "checkpoints/meta-llama/Llama-2-7b-chat-hf/model.pth",
+        / "/mnt/ssd-1/sai/context-compression/checkpoints/usvsnsp/Meta-Llama-3-8B-gist-finetune-instruction-input/model.pth",
         help="Model checkpoint path.",
     )
     parser.add_argument(
@@ -621,6 +638,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--device", type=str, default=default_device, help="Device to use"
+    )
+    parser.add_argument(
+        '--ignore_gist_while_generation',
+        default=False,
+        action="store_true",
+        help="Whether to ignore gist token while generation",
     )
 
     # KV-Cache Kwargs
@@ -710,5 +733,6 @@ if __name__ == "__main__":
         args.draft_checkpoint_path,
         args.speculate_k,
         args.device,
+        args.ignore_gist_while_generation,
         cache_kwargs,
     )

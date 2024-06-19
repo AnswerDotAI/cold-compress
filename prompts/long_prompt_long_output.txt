@@ -1,3 +1,6 @@
+Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+
+### Instruction: 
 You are an architect tasked with drawing up plans for a modern residential house.
 
 Architectural Plan Creation Instructions
@@ -61,3 +64,5 @@ You must return the following:
 - Add a cover sheet with project title, address, date, and designer's name.
 - Add a sheet for each component with detailed plans.
 - Ensure all documents are clearly labeled and organized.
+
+<|gist|>### Response:

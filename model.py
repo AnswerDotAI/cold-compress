@@ -33,6 +33,7 @@ class ModelArgs:
     head_dim: int = 64
     rope_base: float = 10000
     norm_eps: float = 1e-5
+    attention_bias: bool = False
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -46,6 +47,7 @@ class ModelArgs:
     @classmethod
     def from_name(cls, name: str):
         if name in transformer_configs:
+            print(name)
             return cls(**transformer_configs[name])
         # fuzzy search
         config = [
@@ -102,6 +104,7 @@ transformer_configs = {
         dim=4096,
         intermediate_size=14336,
         vocab_size=128256,
+        rope_base=500000,
     ),
     "Meta-Llama-3-8B-Instruct-4-Layers": dict(
         block_size=8192,
@@ -111,6 +114,61 @@ transformer_configs = {
         dim=4096,
         intermediate_size=14336,
         vocab_size=128256,
+        rope_base=500000,
+    ),
+    "Qwen2-1.5B-Instruct": dict(
+        block_size=32768,
+        n_layer=28,
+        n_head=12,
+        n_local_heads=2,
+        dim=1536,
+        intermediate_size=8960,
+        vocab_size=151936,
+        rope_base=1000000,
+        attention_bias=True,
+        norm_eps=1e-6,
+    ),
+    "Qwen2-0.5B-Instruct": dict(
+        block_size=32768,
+        n_layer=24,
+        n_head=14,
+        n_local_heads=2,
+        dim=896,
+        intermediate_size=4864,
+        vocab_size=151936,
+        rope_base=1000000,
+        attention_bias=True,
+        norm_eps=1e-6,
+    ),
+    "Meta-Llama-3-8B-gist-finetune": dict(
+        block_size=8192,
+        n_layer=32,
+        n_head=32,
+        n_local_heads=8,
+        dim=4096,
+        intermediate_size=14336,
+        vocab_size=128257,
+        rope_base=500000
+    ),
+    "Meta-Llama-3-8B-gist-finetune-instruction-only": dict(
+        block_size=8192,
+        n_layer=32,
+        n_head=32,
+        n_local_heads=8,
+        dim=4096,
+        intermediate_size=14336,
+        vocab_size=128257,
+        rope_base=500000
+    ),
+    "Meta-Llama-3-8B-gist-finetune-instruction-input": dict(
+        block_size=8192,
+        n_layer=32,
+        n_head=32,
+        n_local_heads=8,
+        dim=4096,
+        intermediate_size=14336,
+        vocab_size=128257,
+        rope_base=500000
     ),
 }
 
@@ -175,7 +233,6 @@ class Transformer(nn.Module):
         assert self.freqs_cis is not None, "Caches must be initialized first"
         freqs_cis = self.freqs_cis[input_pos]
         x = self.tok_embeddings(idx)
-
         for i, layer in enumerate(self.layers):
             x = layer(x, input_pos, freqs_cis, mask)
         x = self.norm(x)
@@ -210,7 +267,7 @@ class Attention(nn.Module):
 
         total_head_dim = (config.n_head + 2 * config.n_local_heads) * config.head_dim
         # key, query, value projections for all heads, but in a batch
-        self.wqkv = nn.Linear(config.dim, total_head_dim, bias=False)
+        self.wqkv = nn.Linear(config.dim, total_head_dim, bias=config.attention_bias)
         self.wo = nn.Linear(config.dim, config.dim, bias=False)
         self.kv_cache = None
 
