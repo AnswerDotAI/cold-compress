@@ -305,7 +305,8 @@ def generate(
             terminator_ids=terminator_ids,
             **sampling_kwargs,
         )
-        seq[T + 1 : T + 1 + len(generated_tokens)] = torch.cat(generated_tokens)
+        if len(generated_tokens) > 0:
+            seq[T + 1 : T + 1 + len(generated_tokens)] = torch.cat(generated_tokens)
 
     # Truncate seq to first instance of -1 if -1 is present
     if -1 in seq:
