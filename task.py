@@ -199,8 +199,104 @@ Question:
         }
 
 
-TASK_MAPPING = {"squality": Squality, "triviaqa": TriviaQA}
+class Dolomites(EvaluationTask):
+    DEFAULT_PROMPT_TEMPLATE = """You need to perform a writing task from the field of {field}.
+You are given (1) a task description which contains input and output sections, and (2) an example input for this task, which is a sample of the input sections of the task with concrete details.
+You need to generate the output sections for the given example input.
 
+IMPORTANT:
+- Make sure the length of each output section matches the required length and the section headers are exactly the same.
+- Make sure the output follows the structure of the output sections in the task description, is factually accurate and detailed.
+
+====TASK DESCRIPTION====
+{task_description}
+
+====EXAMPLE INPUT====
+{example_input}"""
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1024, **kwargs
+    ):
+        super().__init__(
+            prompt_template, max_tokens, hf_args=["fladhak/dolomites"], **kwargs
+        )
+
+        # Dolomites test split does not have references, so we will use validation split for testing
+        self.test_split = "validation"
+
+        self.metrics = {
+            "BertScore": AutoMetric.from_name("bertscore"),
+            "Rouge": AutoMetric.from_name("rouge"),
+        }
+
+    def prepare_row(self, row: dict):
+        field = row["field"]
+        task_objective = row["task_objective"]
+        task_procedure = row["task_procedure"]
+        task_input = row["task_input"]
+        task_output = row["task_output"]
+        task_notes = row["task_notes"]
+        example_input = row["example_input"]
+        ref = row["example_output"]
+
+        task_description = f"Task objective: {task_objective}\nTask prodecedure: {task_procedure}\nTask input: {task_input}\nTask output: {task_output}"
+        if task_notes is not None:
+            task_description += f"\nAdditional notes: {task_notes}"
+
+        prompt = self.prompt_template.format(
+            field=field,
+            task_description=task_description,
+            example_input=example_input
+        )
+
+        return {
+            "prompt": prompt,
+            "field": field,
+            "context": task_description,
+            "question": example_input,
+            "labels": ref,
+        }
+
+
+class QMSum(EvaluationTask):
+    DEFAULT_PROMPT_TEMPLATE = """You will be shown a meeting transcipt along with a query. Your task is to carefully read the transcript and provide a concise answer to the query.
+
+====MEETING TRANSCRIPT====
+{transcript}
+
+====Query====
+{query}"""
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1024, **kwargs
+    ):
+        super().__init__(
+            prompt_template, max_tokens, hf_args=["fladhak/qmsum"], **kwargs
+        )
+
+        self.metrics = {
+            "BertScore": AutoMetric.from_name("bertscore"),
+            "Rouge": AutoMetric.from_name("rouge"),
+        }
+
+    def prepare_row(self, row: dict):
+        transcript = "\n\n".join([f"{x['speaker']}: {x['content']}" for x in row["transcript"]])
+        query = row["query"]
+        answer = row["answer"]
+
+        prompt = self.prompt_template.format(
+            transcript=transcript,
+            query=query
+        )
+
+        return {
+            "prompt": prompt,
+            "context": transcript,
+            "labels": answer,
+        }
+
+
+TASK_MAPPING = {"squality": Squality, "triviaqa": TriviaQA, "dolomites": Dolomites, "qmsum": QMSum}
 
 class AutoTask:
     def __init__(self):
