@@ -202,6 +202,14 @@ Question:
 
 
 class ScrollsQuality(EvaluationTask):
+    """
+    Evaluation dataset derived from `tau/scrolls`.
+    It is processed into a suitable format here: https://huggingface.co/datasets/rbiswasfc/quality.
+    Test split doesn't have ground truths, hence it will use validation split as an alternative.
+    """
+
+    test_split: str = "validation"
+
     DEFAULT_PROMPT_TEMPLATE = """You are given a question and a relevant context. Answer the question without any explanation.
 
 Context:
@@ -211,7 +219,7 @@ Question:
 {question}"""
 
     def __init__(
-        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1024, **kwargs
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=128, **kwargs
     ):
         super().__init__(
             prompt_template, max_tokens, hf_args=["rbiswasfc/quality"], **kwargs
@@ -234,10 +242,6 @@ Question:
             "prompt": self.prompt_template.format(context=context, question=question),
             "labels": answer,
         }
-
-    def get_test(self):
-        # test split from quality dataset doesn't have ground truth -> using validation split as alternative
-        return self.get_split(self.validation_split)
 
 
 TASK_MAPPING = {
