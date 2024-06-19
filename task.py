@@ -250,9 +250,7 @@ IMPORTANT:
             task_description += f"\nAdditional notes: {task_notes}"
 
         prompt = self.prompt_template.format(
-            field=field,
-            task_description=task_description,
-            example_input=example_input
+            field=field, task_description=task_description, example_input=example_input
         )
 
         return {
@@ -286,14 +284,13 @@ class QMSum(EvaluationTask):
         }
 
     def prepare_row(self, row: dict):
-        transcript = "\n\n".join([f"{x['speaker']}: {x['content']}" for x in row["transcript"]])
+        transcript = "\n\n".join(
+            [f"{x['speaker']}: {x['content']}" for x in row["transcript"]]
+        )
         query = row["query"]
         answer = row["answer"]
 
-        prompt = self.prompt_template.format(
-            transcript=transcript,
-            query=query
-        )
+        prompt = self.prompt_template.format(transcript=transcript, query=query)
 
         return {
             "prompt": prompt,
@@ -302,7 +299,13 @@ class QMSum(EvaluationTask):
         }
 
 
-TASK_MAPPING = {"squality": Squality, "triviaqa": TriviaQA, "dolomites": Dolomites, "qmsum": QMSum}
+TASK_MAPPING = {
+    "squality": Squality,
+    "triviaqa": TriviaQA,
+    "dolomites": Dolomites,
+    "qmsum": QMSum,
+}
+
 
 class AutoTask:
     def __init__(self):

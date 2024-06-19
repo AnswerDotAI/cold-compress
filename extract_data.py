@@ -8,8 +8,10 @@ from evaluate import load
 import pandas as pd
 from scipy.stats import spearmanr
 import numpy as np
+
 np.random.seed(1992)
 from tqdm import tqdm
+import regex as re
 
 try:
     import nltk
@@ -22,6 +24,22 @@ except:
 ROUGE = load("rouge", keep_in_memory=True)
 _DEFAULT_SCORE_PREFILL = "The answer is"
 SCORE_PREFILL = {"dolomites": "The completed task is"}
+
+
+ASK_LLM_PROMPT = """# Instruction
+You are shown a question, answer(s), and potentially useful context sentences.
+- Insert in-line citations into the answer such that each claim is linked to at least 1 context sentence(s).
+- Do not re-write the answer.
+- The citations must match the number assigned to each context sentence in the context section.
+
+# Question
+{question}
+
+# Answer
+{answer}
+
+# Context
+{context}"""
 
 
 def prepare_inputs(row, task, ctxs, tokenizer, max_ctx_len=None):
@@ -43,20 +61,62 @@ def prepare_inputs(row, task, ctxs, tokenizer, max_ctx_len=None):
             }
         )
 
-        prompt = [
-            {"role": "user", "content": prompt}
-        ]
+        prompt = [{"role": "user", "content": prompt}]
 
         if "qwen" in args.model_name.lower():
-            prompt.insert(0, {"role": "system", "content": "You are a helpful assistant."})
+            prompt.insert(
+                0, {"role": "system", "content": "You are a helpful assistant."}
+            )
 
-        prompt = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+        prompt = tokenizer.apply_chat_template(
+            prompt, tokenize=False, add_generation_prompt=True
+        )
         prompt += SCORE_PREFILL.get(task.name, _DEFAULT_SCORE_PREFILL)
         inputs.append(tokenizer.encode(prompt, add_special_tokens=False))
     return inputs
 
 
-def compute_extractive_labels(args, task, scorer, row):
+def ask_llm_labels(args, task, scorer, row):
+    sents = nltk.sent_tokenize(row["context"] or row["question"])
+    labels = row["labels"]
+
+    ctx_sent_delim = "\n".join(
+        f"[{i + 1}] " + re.sub("\s+", " ", sent).strip() for i, sent in enumerate(sents)
+    )
+
+    prompt = ASK_LLM_PROMPT.format(
+        question=row["question"],
+        context=ctx_sent_delim,
+        # answer="\n".join([f"Answer {i + 1}: " + re.sub("\s+", " ", l).strip() for i, l in enumerate(labels)]),
+        answer="\n".join([re.sub("\s+", " ", l).strip() for i, l in enumerate(labels)]),
+    )
+
+    prompt = [{"role": "user", "content": prompt}]
+
+    if "qwen" in args.model_name.lower():
+        prompt.insert(0, {"role": "system", "content": "You are a helpful assistant."})
+
+    prompt = tokenizer.apply_chat_template(
+        prompt, tokenize=False, add_generation_prompt=True
+    )
+
+    input_ids = tokenizer.encode(
+        prompt, add_special_tokens=False, return_tensors="pt"
+    ).to(scorer.device)
+
+    with torch.no_grad():
+        ids = scorer.generate(input_ids, max_new_tokens=2048, num_beams=1).tolist()[0]
+        new_tokens = tokenizer.decode(ids[input_ids.shape[-1] :]).strip()
+        print(new_tokens)
+
+    gen_idxs = list(map(lambda x: int(x) - 1, re.findall(r"\[(\d+)\]", new_tokens)))
+    # Remove duplicates while preserving order
+    gen_idxs = list(dict.fromkeys(gen_idxs))
+    model_scores = [1 if (i + 1) in gen_idxs else 0 for i in range(len(sents))]
+    return {"sents": sents, "model_scores": model_scores}, None
+
+
+def log_likelihood_labels(args, task, scorer, row):
     sents = nltk.sent_tokenize(row["context"] or row["question"])
     labels = row["labels"]
 
@@ -153,7 +213,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_name",
         type=str,
-        default="microsoft/Phi-3-mini-128k-instruct",  # "Qwen/Qwen2-7B-Instruct",
+        default="Qwen/Qwen2-7B-Instruct",  # "meta-llama/Meta-Llama-3-8B",  # "microsoft/Phi-3-mini-128k-instruct",
         help="The model to use as the extractor.",
     )
 
@@ -183,6 +243,15 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="An optional override to max context window of model.",
+    )
+
+    parser.add_argument(
+        "--label_method",
+        default="ask",
+        help="The method to use for generating labels.",
+        # Ask --> ask the LLM which sentences are helpful for answering
+        # Influence --> how much does each sentence increase LL of answer
+        choices=["influence", "ask"],
     )
 
     parser.add_argument(
@@ -235,11 +304,13 @@ if __name__ == "__main__":
         print(f"Processing {n} examples from {split}...")
         corels = []
         for row in tqdm(data):
-            new_data, _corels = compute_extractive_labels(args, task, scorer, row)
-
-            corels.append(_corels)
-            print("Avg Rank Correlations of ROUGE to model scores:\n")
-            print(pd.DataFrame(corels).mean())
+            if args.label_method == "ask":
+                new_data = ask_llm_labels(args, task, scorer, row)
+            else:
+                new_data, _corels = log_likelihood_labels(args, task, scorer, row)
+                corels.append(_corels)
+                print("Avg Rank Correlations of ROUGE to model scores:\n")
+                print(pd.DataFrame(corels).mean())
 
         dataset[split] = data.map(lambda _, idx: new_data[idx], with_indices=True)
 
