@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
+
 from datasets import load_dataset
+
 from metric import AutoMetric
 
 
@@ -199,7 +201,50 @@ Question:
         }
 
 
-TASK_MAPPING = {"squality": Squality, "triviaqa": TriviaQA}
+class ScrollsQuality(EvaluationTask):
+    DEFAULT_PROMPT_TEMPLATE = """You are given a question and a relevant context. Answer the question without any explanation.
+
+Context:
+{context}
+
+Question:
+{question}"""
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1024, **kwargs
+    ):
+        super().__init__(
+            prompt_template, max_tokens, hf_args=["rbiswasfc/quality"], **kwargs
+        )
+
+        self.metrics = {
+            "BertScore": AutoMetric.from_name("bertscore"),
+            "Rouge": AutoMetric.from_name("rouge"),
+        }
+
+    def prepare_row(self, row: dict):
+        context = row["context"]
+        question = row["question"]
+        choices = row["choices"]
+        answer = choices[row["label"]]
+
+        return {
+            "context": context,
+            "question": question,
+            "prompt": self.prompt_template.format(context=context, question=question),
+            "labels": answer,
+        }
+
+    def get_test(self):
+        # test split from quality dataset doesn't have ground truth -> using validation split as alternative
+        return self.get_split(self.validation_split)
+
+
+TASK_MAPPING = {
+    "squality": Squality,
+    "triviaqa": TriviaQA,
+    "scrolls_quality": ScrollsQuality,
+}
 
 
 class AutoTask:
