@@ -33,6 +33,7 @@ class ModelArgs:
     head_dim: int = 64
     rope_base: float = 10000
     norm_eps: float = 1e-5
+    attention_bias: bool = False
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -102,6 +103,7 @@ transformer_configs = {
         dim=4096,
         intermediate_size=14336,
         vocab_size=128256,
+        rope_base=500000,
     ),
     "Meta-Llama-3-8B-Instruct-4-Layers": dict(
         block_size=8192,
@@ -111,6 +113,31 @@ transformer_configs = {
         dim=4096,
         intermediate_size=14336,
         vocab_size=128256,
+        rope_base=500000,
+    ),
+    "Qwen2-1.5B-Instruct": dict(
+        block_size=32768,
+        n_layer=28,
+        n_head=12,
+        n_local_heads=2,
+        dim=1536,
+        intermediate_size=8960,
+        vocab_size=151936,
+        rope_base=1000000,
+        attention_bias=True,
+        norm_eps=1e-6,
+    ),
+    "Qwen2-0.5B-Instruct": dict(
+        block_size=32768,
+        n_layer=24,
+        n_head=14,
+        n_local_heads=2,
+        dim=896,
+        intermediate_size=4864,
+        vocab_size=151936,
+        rope_base=1000000,
+        attention_bias=True,
+        norm_eps=1e-6,
     ),
 }
 
@@ -210,7 +237,7 @@ class Attention(nn.Module):
 
         total_head_dim = (config.n_head + 2 * config.n_local_heads) * config.head_dim
         # key, query, value projections for all heads, but in a batch
-        self.wqkv = nn.Linear(config.dim, total_head_dim, bias=False)
+        self.wqkv = nn.Linear(config.dim, total_head_dim, bias=config.attention_bias)
         self.wo = nn.Linear(config.dim, config.dim, bias=False)
         self.kv_cache = None
 

@@ -1,7 +1,14 @@
+absl
+accelerate
+bert-score
 blobfile
 claudette
 datasets
+evaluate
 huggingface_hub
+nltk
 sentencepiece
-tiktoken
+rouge-score
 ruff
+tiktoken
+git+https://github.com/google-research/bleurt.git

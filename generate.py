@@ -34,7 +34,7 @@ wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
 from model import Transformer, find_multiple
-from tokenizer import Llama3ChatFormat, Llama2ChatFormat, get_tokenizer
+from tokenizer import get_tokenizer
 
 
 def multinomial_sample_one_no_sync(
@@ -195,7 +195,7 @@ def normalize_cache_length(
                 f"Warning: max_cache_length ({max_cache_length}) is greater than max_seq_length ({max_seq_length}). Setting to {max_seq_length}"
             )
             max_cache_length = max_seq_length
-    return find_multiple(max_cache_length, multiple_of)
+    return min(find_multiple(max_cache_length, multiple_of), max_seq_length)
 
 
 @torch.no_grad()
@@ -262,9 +262,8 @@ def generate(
 
     # create an empty tensor (all -1) of the expected final shape and fill in the current tokens
     # GPT-Fast had this as empty but the values of empty are non-deterministic
-    empty = torch.full((max_seq_length,), -1, dtype=dtype, device=device)
-    empty[:T] = prompt
-    seq = empty
+    seq = torch.full((max_seq_length,), -1, dtype=dtype, device=device)
+    seq[:T] = prompt
     input_pos = torch.arange(0, T, device=device)
 
     next_token = prefill(
@@ -345,7 +344,6 @@ def _load_model(checkpoint_path, device, precision, use_tp):
     if "model" in checkpoint and "stories" in str(checkpoint_path):
         checkpoint = checkpoint["model"]
     model.load_state_dict(checkpoint, assign=True)
-
     if use_tp:
         from tp import apply_tp
 
@@ -394,7 +392,10 @@ def main(
     assert checkpoint_path.is_file(), checkpoint_path
 
     tokenizer_path = checkpoint_path.parent / "tokenizer.model"
-    assert tokenizer_path.is_file(), str(tokenizer_path)
+    if not tokenizer_path.is_file():
+        # If there's no tokenizer.model, try to load the tokenizer from the parent directory
+        # NOTE: We assume the tokenizer in the parent directory is compatible with huggingface transformers
+        tokenizer_path = checkpoint_path.parent
 
     global print
     from tp import maybe_init_dist
@@ -414,8 +415,6 @@ def main(
         or "instruct" in str(checkpoint_path).lower()
     )
 
-    is_llama2 = "llama-2" in str(checkpoint_path).lower()
-
     print("Loading model ...")
     t0 = time.time()
     model = _load_model(checkpoint_path, device, precision, use_tp)
@@ -428,21 +427,19 @@ def main(
     device_sync(device=device)  # MKG
     print(f"Time to load model: {time.time() - t0:.02f} seconds")
 
-    tokenizer = get_tokenizer(tokenizer_path, checkpoint_path)
+    tokenizer = get_tokenizer(tokenizer_path, checkpoint_path, is_chat=is_chat)
 
     if is_chat:
-        template_cls = Llama2ChatFormat if is_llama2 else Llama3ChatFormat
-        tokens = template_cls(tokenizer).encode_prompt(prompt)
+        tokens = tokenizer.encode_prompt(prompt)
         encoded = torch.tensor(tokens, dtype=torch.int, device=device)
     else:
         encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
     prompt_length = encoded.size(0)
 
-    terminator_ids = [tokenizer.eos_id()]
-    if not is_llama2:
-        terminator_ids.append(tokenizer.special_tokens["<|eot_id|>"])
     if args.no_terminators:
         terminator_ids = None
+    else:
+        terminator_ids = tokenizer.get_terminator_ids()
 
     torch.manual_seed(1234)
     model_size = _get_model_size(model)
@@ -480,8 +477,10 @@ def main(
         if i >= 0 and interactive:
             prompt = input("What is your prompt? ")
             if is_chat:
-                prompt = f"{B_INST} {prompt.strip()} {E_INST}"
-            encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
+                tokens = tokenizer.encode_prompt(prompt)
+                encoded = torch.tensor(tokens, dtype=torch.int, device=device)
+            else:
+                encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
 
         if interactive and i >= 0:
             buffer = []
@@ -535,7 +534,6 @@ def main(
         device_sync(device=device)  # MKG
         t = time.perf_counter() - t0
 
-        y_str = tokenizer.decode(y.tolist())
         if not interactive:
             print(tokenizer.decode(y.tolist()))
         else:
@@ -598,7 +596,7 @@ if __name__ == "__main__":
         "--checkpoint_path",
         type=Path,
         default=Path(__file__).resolve().parent
-        / "checkpoints/meta-llama/Llama-2-7b-chat-hf/model.pth",
+        / "checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth",
         help="Model checkpoint path.",
     )
     parser.add_argument(
