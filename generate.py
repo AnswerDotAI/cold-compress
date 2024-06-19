@@ -246,10 +246,13 @@ def generate(
     cache_kwargs["max_cache_length"] = [
         item for item in cache_kwargs["max_cache_length"] for _ in range(tile_size)
     ]
-    cache_kwargs["drop_amount"] = [
-        max(int(cache_kwargs["drop_amount"] * l), 1)
-        for l in cache_kwargs["max_cache_length"]
-    ]
+
+    # Gets called twice when model is wrapped in torch.compile which causes an error without the if statement
+    if type(cache_kwargs["drop_amount"]) != list:
+        cache_kwargs["drop_amount"] = [
+            max(int(cache_kwargs["drop_amount"] * l), 1)
+            for l in cache_kwargs["max_cache_length"]
+        ]
 
     assert cache_kwargs["global_tokens"] <= min(
         cache_kwargs["max_cache_length"]
