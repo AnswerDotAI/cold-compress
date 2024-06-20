@@ -244,9 +244,7 @@ IMPORTANT:
             task_description += f"\nAdditional notes: {task_notes}"
 
         prompt = self.prompt_template.format(
-            field=field,
-            task_description=task_description,
-            example_input=example_input
+            field=field, task_description=task_description, example_input=example_input
         )
 
         return {
@@ -280,14 +278,13 @@ class QMSum(EvaluationTask):
         }
 
     def prepare_row(self, row: dict):
-        transcript = "\n\n".join([f"{x['speaker']}: {x['content']}" for x in row["transcript"]])
+        transcript = "\n\n".join(
+            [f"{x['speaker']}: {x['content']}" for x in row["transcript"]]
+        )
         query = row["query"]
         answer = row["answer"]
 
-        prompt = self.prompt_template.format(
-            transcript=transcript,
-            query=query
-        )
+        prompt = self.prompt_template.format(transcript=transcript, query=query)
 
         return {
             "prompt": prompt,
@@ -322,14 +319,13 @@ IMPORTANT: You should only use the infomation provided in the paragraphs to answ
         }
 
     def prepare_row(self, row: dict):
-        paragraphs = "\n\n".join([f"{x['title']}:\n{x['paragraph_text']}" for x in row["paragraphs"]])
+        paragraphs = "\n\n".join(
+            [f"{x['title']}:\n{x['paragraph_text']}" for x in row["paragraphs"]]
+        )
         question = row["question"]
         answers = [row["answer"]] + row["answer_aliases"]
 
-        prompt = self.prompt_template.format(
-            paragraphs=paragraphs,
-            question=question
-        )
+        prompt = self.prompt_template.format(paragraphs=paragraphs, question=question)
 
         return {
             "prompt": prompt,
@@ -338,7 +334,14 @@ IMPORTANT: You should only use the infomation provided in the paragraphs to answ
         }
 
 
-TASK_MAPPING = {"squality": Squality, "triviaqa": TriviaQA, "dolomites": Dolomites, "qmsum": QMSum, "musique": Musique}
+TASK_MAPPING = {
+    "squality": Squality,
+    "triviaqa": TriviaQA,
+    "dolomites": Dolomites,
+    "qmsum": QMSum,
+    "musique": Musique,
+}
+
 
 class AutoTask:
     def __init__(self):

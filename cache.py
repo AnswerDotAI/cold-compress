@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 
 import torch
 import torch.nn as nn
+from prompt_compression import prompt_compressor_constructor
 
 
 class KVCache(ABC, nn.Module):
@@ -46,6 +47,11 @@ class KVCache(ABC, nn.Module):
         self.updates = 0
         self.insertions = 0
 
+        # Incase the |prompt| > max_cache_length, we need to compress the prompt which requires a separate strategy
+        self.prompt_compressor = prompt_compressor_constructor(
+            self.prompt_compression_strategy
+        )(head_specific=self.head_specific, **kwargs)
+
     def reset(self):
         """
         If needed, this will reset the cache, although it is likely not necessary for most cache types.
@@ -68,80 +74,30 @@ class KVCache(ABC, nn.Module):
         """
         return self.updates == 0
 
+    def get_compression_strategy(self):
+        """
+        Returns the prompt compression strategy.
+        """
+        if self.prompt_compression_strategy == "snapkv":
+            assert (
+                self.head_specific
+            ), "SnapKV can only be used with head-specific KV caches."
+        elif self.prompt_compression_strategy == "recent_global":
+            assert (
+                not self.head_specific
+            ), "Recent global can only be used with global KV caches."
+
     def compress_prompt(self, input_pos, k_val, v_val, attn):
         # If the prompt is longer than the cache, we need to compress it to fit cache and then store (update).
         assert (
             input_pos.shape[0] > self.max_cache_length
         ), "You called compress_prompt in prefill stage yet prompt is not longer than max_cache_length."
-        # Can we make head specific evictions (--> use SnapKV) else just take the global_tokens + most recent tokens
-        compressor = (
-            self._compress_prompt_w_snapkv
-            if self.head_specific
-            else self._compress_prompt_w_recent_global
+        input_pos, k_val, v_val, attn = self.prompt_compressor(
+            input_pos, k_val, v_val, attn
         )
-        input_pos, k_val, v_val, attn = compressor(input_pos, k_val, v_val, attn)
         self.update(input_pos, k_val, v_val)
         if attn is not None:
             self.update_attn_history(attn)
-
-    def _compress_prompt_w_recent_global(self, input_pos, k_val, v_val, attn):
-        # [global; ...; window - global] --> [global; window - global]
-        # Indices for first global_tokens tokens and last (window - global_tokens) tokens
-        # Making this a tensor seems to give a speedup, but I haven't fully benchmarked
-        keep_idxs = torch.tensor(
-            list(range(self.global_tokens))
-            + list(
-                range(
-                    input_pos.shape[0] - self.max_cache_length + self.global_tokens,
-                    input_pos.shape[0],
-                )
-            ),
-            dtype=torch.long,
-            device=k_val.device,
-        )
-        assert len(keep_idxs) == self.max_cache_length
-        k_val = k_val[:, :, keep_idxs]
-        v_val = v_val[:, :, keep_idxs]
-        return input_pos[: self.max_cache_length], k_val, v_val, None
-
-    def _compress_prompt_w_snapkv(
-        self, input_pos, k_val, v_val, attn, observation_len=16, kernel_size=5
-    ):
-        """
-        Use SnapKV to compress the prompt
-        Inspired by the pseudo code on Page 7 of https://arxiv.org/abs/2404.14469
-        """
-
-        pool = torch.nn.AvgPool1d(
-            kernel_size,
-            stride=1,
-            padding=kernel_size // 2,
-            ceil_mode=False,
-            count_include_pad=False,
-        )
-        priority = attn[:, :, -observation_len:, :].mean(dim=2)
-        prev_shape = priority.shape
-
-        # We'll be returning the attention history so we need to keep a copy before it's modified
-        attn_history = priority.clone()
-        priority = pool(priority)
-        assert (
-            priority.shape == prev_shape
-        ), f"Pooling operation should not change the dimension: {prev_shape} -> {priority.shape}"
-        priority[:, :, -observation_len:] = (
-            1.0  # Ensure the observation window is selected
-        )
-        keep_idxs = (
-            priority.topk(self.max_cache_length, dim=-1).indices.sort(dim=-1).values
-        )
-
-        attn_history = attn_history.gather(2, keep_idxs)
-
-        keep_idxs_rep = keep_idxs.unsqueeze(-1).expand(-1, -1, -1, k_val.shape[-1])
-        k_val_compressed = k_val.gather(2, keep_idxs_rep)
-        v_val_compressed = v_val.gather(2, keep_idxs_rep)
-
-        return keep_idxs.squeeze(0), k_val_compressed, v_val_compressed, attn_history
 
     def update(self, input_pos, k_val, v_val):
         """
@@ -311,15 +267,51 @@ class KVCacheFull(KVCache):
         return self.fill_contiguous(input_pos, k_val, v_val)
 
 
+class KVCacheL2(KVCache):
+    relevant_kwargs = ["max_cache_length", "prompt_compression_strategy"]
+
+    def __init__(
+        self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
+    ):
+        super().__init__(
+            max_batch_size, n_heads, head_dim, dtype, head_specific=True, **kwargs
+        )
+
+        key_norm_shape = (max_batch_size, n_heads, self.max_cache_length)
+        self.register_buffer("key_norm", torch.zeros(key_norm_shape, dtype=dtype))
+
+    def _update(self, input_pos, k_val, v_val):
+        key_norm = torch.linalg.vector_norm(k_val, ord=2, dim=-1)
+        if self.insertions < self.max_cache_length:  # Insert into first unfilled spots
+            self.fill_contiguous(input_pos, k_val, v_val)
+            start, end = self.insertions, self.insertions + k_val.shape[2]
+            self.key_norm[:, :, start:end] = key_norm
+            return
+
+        fill_indices = torch.argmax(self.key_norm, dim=-1).squeeze(0)
+        self.fill_headwise(fill_indices, input_pos, k_val, v_val)
+
+        # Do a scatter update to update the key norms
+        fill_indices = fill_indices.view(1, -1, 1)
+        self.key_norm.scatter_(2, fill_indices, key_norm)
+
+    def update_attn_history(self, attn):
+        """
+        This will be called if |prompt| > max_cache_length and SnapKV prompt compression is used.
+        Because L2 cache does not require attention weights, this function is a no-op.
+        """
+        pass
+
+
 class KVCacheRandom(KVCache):
+    relevant_kwargs = ["max_cache_length", "prompt_compression_strategy"]
+
     def __init__(
         self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
     ):
         super().__init__(
             max_batch_size, n_heads, head_dim, dtype, head_specific=False, **kwargs
         )
-        self.global_tokens = 0
-        self.global_filled = True
 
     def _update(self, input_pos, k_val, v_val):
         start = end = None  # We will fill the cache in order if start and end are None
@@ -334,7 +326,11 @@ class KVCacheRandom(KVCache):
 
 
 class KVCacheWindow(KVCache):
-    relevant_kwargs = ["max_cache_length", "global_tokens"]
+    relevant_kwargs = [
+        "max_cache_length",
+        "global_tokens",
+        "prompt_compression_strategy",
+    ]
 
     def __init__(
         self,
@@ -375,6 +371,7 @@ class KVCacheScissorhands(KVCacheWindow):
         "drop_amount",
         "recent_window",
         "attn_thresholding",
+        "prompt_compression_strategy",
     ]
 
     def __init__(
@@ -516,6 +513,8 @@ class KVCacheScissorhands(KVCacheWindow):
 def get_cache_constructor(cache_strategy):
     if cache_strategy == "full":
         return KVCacheFull
+    elif cache_strategy == "l2":
+        return KVCacheL2
     elif cache_strategy == "random":
         return KVCacheRandom
     elif cache_strategy == "window":
