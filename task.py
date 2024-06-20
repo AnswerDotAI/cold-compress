@@ -97,12 +97,12 @@ class EvaluationTask(ABC):
 
 
 class Squality(EvaluationTask):
-    DEFAULT_PROMPT_TEMPLATE = """You are given a story and a question. Answer the question in a single paragraph.
+    DEFAULT_PROMPT_TEMPLATE = """You are given a story and a question. Answer the question in a paragraph.
 
-====STORY====
+Story:
 {story}
 
-====QUESTION====
+Question:
 {question}"""
 
     def __init__(
@@ -296,49 +296,7 @@ class QMSum(EvaluationTask):
         }
 
 
-class Musique(EvaluationTask):
-    DEFAULT_PROMPT_TEMPLATE = """You will be shown several paragraphs from Wikipedia along with a question. Your task is to carefully read the paragraphs and provide a concise answer to the question.
-IMPORTANT: You should only use the infomation provided in the paragraphs to answer the question.
-
-====PARAGRAPHS====
-{paragraphs}
-
-====QUESTION====
-{question}"""
-
-    def __init__(
-        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=128, **kwargs
-    ):
-        super().__init__(
-            prompt_template, max_tokens, hf_args=["fladhak/musique"], **kwargs
-        )
-
-        # Musique test split does not have references, so we will use validation split for testing
-        self.test_split = "validation"
-
-        self.metrics = {
-            "BertScore": AutoMetric.from_name("bertscore"),
-            "Rouge": AutoMetric.from_name("rouge"),
-        }
-
-    def prepare_row(self, row: dict):
-        paragraphs = "\n\n".join([f"{x['title']}:\n{x['paragraph_text']}" for x in row["paragraphs"]])
-        question = row["question"]
-        answers = [row["answer"]] + row["answer_aliases"]
-
-        prompt = self.prompt_template.format(
-            paragraphs=paragraphs,
-            question=question
-        )
-
-        return {
-            "prompt": prompt,
-            "context": paragraphs,
-            "labels": answers,
-        }
-
-
-TASK_MAPPING = {"squality": Squality, "triviaqa": TriviaQA, "dolomites": Dolomites, "qmsum": QMSum, "musique": Musique}
+TASK_MAPPING = {"squality": Squality, "triviaqa": TriviaQA, "dolomites": Dolomites, "qmsum": QMSum}
 
 class AutoTask:
     def __init__(self):
