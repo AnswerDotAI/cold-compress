@@ -72,7 +72,7 @@ def prefill(
         .to(x.device)
     )
     logits = model(x, input_pos, mask=causal_mask)
-    return sample(logits, **sampling_kwargs)[0]
+    return sample(logits, **sampling_kwargs)
 
 
 def decode_one_token(
@@ -269,9 +269,11 @@ def generate(
     seq[:T] = prompt
     input_pos = torch.arange(0, T, device=device)
 
-    next_token = prefill(
+    ret = prefill(
         model, prompt.view(1, -1), input_pos, **sampling_kwargs
-    ).clone()
+    )
+    next_token = ret[0].clone()
+    next_tok_probs = ret[1].clone()
     if is_speculative:
         prefill(draft_model, prompt.view(1, -1), input_pos, **sampling_kwargs)
     seq[T] = next_token
@@ -296,7 +298,7 @@ def generate(
             input_pos = input_pos + num_added
             next_token = next_tokens[-1]
     else:
-        generated_tokens, _ = decode_n_tokens(
+        generated_tokens, generated_tok_probs = decode_n_tokens(
             model,
             next_token.view(1, -1),
             input_pos,
@@ -313,7 +315,7 @@ def generate(
         seq = seq[: torch.where(seq == -1)[0][0]]
 
     generate_stats = {"accept_counts": accept_counts}
-    return seq, generate_stats
+    return seq, generate_stats, [next_tok_probs] + generated_tok_probs
 
 
 def encode_tokens(tokenizer, string, bos=True, device=default_device):
@@ -513,7 +515,7 @@ def main(
             torch.profiler._utils._init_for_cuda_graphs()
             prof = torch.profiler.profile()
         with prof:
-            y, metrics = generate(
+            y, metrics, _ = generate(
                 model,
                 encoded,
                 max_new_tokens,
