@@ -637,8 +637,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--cache_strategy",
         default="full",
-        choices=["full", "random", "window", "scissor"],
+        choices=["full", "random", "window", "scissor", "l2"],
     )
+
+    parser.add_argument(
+        "--prompt_compression_strategy",
+        default="window",
+        choices=["recent_global", "snapkv"],
+        help="If |prompt| exceeds max_cache_length, we need to specify a strategy for compressing it to max_cache_length.",
+    )
+
     # Optional Cache Kwargs depending on cache_strategy
     parser.add_argument(
         "--global_tokens",
@@ -696,6 +704,7 @@ if __name__ == "__main__":
         "drop_amount": args.drop_amount,
         "recent_window": args.recent_window,
         "attn_thresholding": args.attn_thresholding,
+        "prompt_compression_strategy": args.prompt_compression_strategy,
     }
 
     main(
