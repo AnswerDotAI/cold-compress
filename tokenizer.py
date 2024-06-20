@@ -34,7 +34,9 @@ class TokenizerInterface:
         raise NotImplementedError("This method should be overridden by subclasses.")
 
     def get_vocab(self):
-        assert self.vocab is not None, "Subclasses should set the vocab attribute during initialization."
+        assert (
+            self.vocab is not None
+        ), "Subclasses should set the vocab attribute during initialization."
         return self.vocab
 
 
@@ -43,7 +45,10 @@ class SentencePieceWrapper(TokenizerInterface):
         super().__init__(model_path)
         self.processor = spm.SentencePieceProcessor(str(model_path))
         self.terminator_ids = [self.processor.eos_id()]
-        self.vocab = [self.processor.id_to_piece(id) for id in range(self.processor.get_piece_size())]
+        self.vocab = [
+            self.processor.id_to_piece(id)
+            for id in range(self.processor.get_piece_size())
+        ]
 
     def encode(self, text):
         return self.processor.EncodeAsIds(text)
@@ -128,7 +133,9 @@ class TokenizersWrapper(TokenizerInterface):
         super().__init__(model_path)
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.terminator_ids = [self.tokenizer.eos_token_id]
-        self.vocab = [self.tokenizer.decode(i) for i in range(self.tokenizer.vocab_size)]
+        self.vocab = [
+            self.tokenizer.decode(i) for i in range(self.tokenizer.vocab_size)
+        ]
 
     def encode(self, text):
         return self.tokenizer.encode(text, add_special_tokens=False)

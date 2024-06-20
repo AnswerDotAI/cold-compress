@@ -63,13 +63,19 @@ class Accuracy(Metric):
 
     def _load_metric(self, **kwargs):
         from sklearn.metrics import accuracy_score
+
         self.metric = accuracy_score
 
     def compute(self, predictions, references):
         return self.metric(references, predictions)
 
 
-METRIC_MAPPING = {"bertscore": BertScore, "rouge": Rouge, "bleurt": Bleurt, "accuracy": Accuracy}
+METRIC_MAPPING = {
+    "bertscore": BertScore,
+    "rouge": Rouge,
+    "bleurt": Bleurt,
+    "accuracy": Accuracy,
+}
 
 
 class AutoMetric:

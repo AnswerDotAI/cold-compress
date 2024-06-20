@@ -263,9 +263,7 @@ IMPORTANT:
             task_description += f"\nAdditional notes: {task_notes}"
 
         prompt = self.prompt_template.format(
-            field=field,
-            task_description=task_description,
-            example_input=example_input
+            field=field, task_description=task_description, example_input=example_input
         )
 
         return {
@@ -299,14 +297,13 @@ class QMSum(EvaluationTask):
         }
 
     def prepare_row(self, row: dict):
-        transcript = "\n\n".join([f"{x['speaker']}: {x['content']}" for x in row["transcript"]])
+        transcript = "\n\n".join(
+            [f"{x['speaker']}: {x['content']}" for x in row["transcript"]]
+        )
         query = row["query"]
         answer = row["answer"]
 
-        prompt = self.prompt_template.format(
-            transcript=transcript,
-            query=query
-        )
+        prompt = self.prompt_template.format(transcript=transcript, query=query)
 
         return {
             "prompt": prompt,
@@ -341,14 +338,13 @@ IMPORTANT: You should only use the infomation provided in the paragraphs to answ
         }
 
     def prepare_row(self, row: dict):
-        paragraphs = "\n\n".join([f"{x['title']}:\n{x['paragraph_text']}" for x in row["paragraphs"]])
+        paragraphs = "\n\n".join(
+            [f"{x['title']}:\n{x['paragraph_text']}" for x in row["paragraphs"]]
+        )
         question = row["question"]
         answers = [row["answer"]] + row["answer_aliases"]
 
-        prompt = self.prompt_template.format(
-            paragraphs=paragraphs,
-            question=question
-        )
+        prompt = self.prompt_template.format(paragraphs=paragraphs, question=question)
 
         return {
             "prompt": prompt,
@@ -368,11 +364,12 @@ Question:
 Answer choices:
 {choices}"""
 
-    def __init__(
-        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1, **kwargs
-    ):
+    def __init__(self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1, **kwargs):
         super().__init__(
-            prompt_template, max_tokens, hf_args=["truthfulqa/truthful_qa", "multiple_choice"], **kwargs
+            prompt_template,
+            max_tokens,
+            hf_args=["truthfulqa/truthful_qa", "multiple_choice"],
+            **kwargs,
         )
 
         # Musique test split does not have references, so we will use validation split for testing
@@ -384,33 +381,43 @@ Answer choices:
         self.mandatory_cols.append("num_choices")
 
     def prepare_row(self, row: dict):
-        question = row['question']
-        choices = '\n'.join([f"{char}. {opt}" for char, opt in zip(ascii_uppercase, row['mc1_targets']['choices'])])
-        answer = ascii_uppercase[row['mc1_targets']['labels'].index(1)]
-
-        prompt = self.prompt_template.format(
-            question=question,
-            choices=choices
+        question = row["question"]
+        choices = "\n".join(
+            [
+                f"{char}. {opt}"
+                for char, opt in zip(ascii_uppercase, row["mc1_targets"]["choices"])
+            ]
         )
+        answer = ascii_uppercase[row["mc1_targets"]["labels"].index(1)]
+
+        prompt = self.prompt_template.format(question=question, choices=choices)
 
         return {
             "prompt": prompt,
             "question": question,
             "context": choices,
             "labels": answer,
-            "num_choices": len(row['mc1_targets']['choices'])
+            "num_choices": len(row["mc1_targets"]["choices"]),
         }
 
     def _process_logits(self, logits, split):
         preds = []
-        for l, nc in zip(logits, self.get_split(split)['num_choices']):
+        for l, nc in zip(logits, self.get_split(split)["num_choices"]):
             pred = [l[ascii_uppercase[i]] for i in range(nc)]
             preds.append(ascii_uppercase[np.argmax(pred)])
 
         return preds
 
 
-TASK_MAPPING = {"squality": Squality, "triviaqa": TriviaQA, "dolomites": Dolomites, "qmsum": QMSum, "musique": Musique, "truthfulqa": TruthfulQA}
+TASK_MAPPING = {
+    "squality": Squality,
+    "triviaqa": TriviaQA,
+    "dolomites": Dolomites,
+    "qmsum": QMSum,
+    "musique": Musique,
+    "truthfulqa": TruthfulQA,
+}
+
 
 class AutoTask:
     def __init__(self):

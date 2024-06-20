@@ -35,7 +35,7 @@ wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
 from tokenizer import get_tokenizer
-from generate import _load_model, generate, encode_tokens
+from generation_utils import _load_model, generate, encode_tokens
 from task import TASK_MAPPING, AutoTask
 
 
@@ -146,7 +146,9 @@ def main(
             )[1]
             predictions.append(pred)
             if task.requires_logits:
-                all_probs.append({k:v for k,v in zip(tokenizer.get_vocab(), probs[0].tolist())})
+                all_probs.append(
+                    {k: v for k, v in zip(tokenizer.get_vocab(), probs[0].tolist())}
+                )
             tokens_generated = y.size(0) - prompt_length
             tokens_sec = tokens_generated / t
             aggregate_metrics["tokens_per_sec"].append(tokens_sec)
