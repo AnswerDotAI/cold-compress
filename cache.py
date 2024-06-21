@@ -44,13 +44,16 @@ class KVCache(ABC, nn.Module):
                 dtype=torch.int,
             ),
         )
-        self.updates = 0
         self.insertions = 0
 
         # Incase the |prompt| > max_cache_length, we need to compress the prompt which requires a separate strategy
-        self.prompt_compressor = prompt_compressor_constructor(
-            self.prompt_compression_strategy
-        )(head_specific=self.head_specific, **kwargs)
+        self.prompt_compressor = (
+            None
+            if self.prompt_compression_strategy is None
+            else prompt_compressor_constructor(self.prompt_compression_strategy)(
+                head_specific=self.head_specific, **kwargs
+            )
+        )
 
     def reset(self):
         """
@@ -60,7 +63,6 @@ class KVCache(ABC, nn.Module):
         self.v_cache.zero_()
         self.pos.fill_(-1)
         self.insertions = 0
-        self.updates = 0
 
     def return_attn(self):
         """
@@ -72,7 +74,7 @@ class KVCache(ABC, nn.Module):
         """
         Returns whether the cache is in the prefill stage.
         """
-        return self.updates == 0
+        return self.insertions == 0
 
     def get_compression_strategy(self):
         """
@@ -140,7 +142,6 @@ class KVCache(ABC, nn.Module):
         self._update(input_pos, k_val, v_val)
 
         # Update counters
-        self.updates += 1
         self.insertions += num_tokens
 
         # Truncate the cache based on number of insertions. It will be at the end since we prefill in-order
@@ -257,6 +258,8 @@ class KVCacheFull(KVCache):
     def __init__(
         self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
     ):
+        # Never any prompt compression for full cache
+        self.prompt_compression_strategy = None
         super().__init__(
             max_batch_size, n_heads, head_dim, dtype, head_specific=False, **kwargs
         )
