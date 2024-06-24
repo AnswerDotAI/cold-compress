@@ -11,9 +11,9 @@ def scaled_dot_product_attention(
     value,
     attn_mask=None,
     dropout_p=0.0,
-    is_causal=False,
     scale=None,
     return_attn=False,
+    **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor | None]:
     """
     Uses naive PyTorch sdpa implementation if we need to return_attn. Otherwise use the optimized version.
@@ -27,33 +27,19 @@ def scaled_dot_product_attention(
             value,
             attn_mask=attn_mask,
             dropout_p=dropout_p,
-            is_causal=is_causal,
             scale=scale,
         ), None
-    B, L, S = query.size(0), query.size(-2), key.size(-2)
+    B, H, L, S = query.size(0), query.size(1), query.size(-2), key.size(-2)
     scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
     attn_weight = query @ key.transpose(-2, -1) * scale_factor
 
-    needs_masking = is_causal or attn_mask is not None
-    if needs_masking:
-        assert not (
-            attn_mask is not None and is_causal
-        ), "Should only be passing in attn_mask or is_causal=True."
-        attn_bias = torch.zeros(B, 1, L, S, dtype=query.dtype, device=query.device)
-        if is_causal:
-            assert attn_mask is None
-            attn_mask = (
-                torch.ones(L, S, dtype=torch.bool, device=query.device)
-                .tril(diagonal=0)
-                .unsqueeze(0)
-                .unsqueeze(0)
-            )
-        if attn_mask.dtype == torch.bool:
-            attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
-        else:
-            attn_bias += attn_mask
-        attn_weight += attn_bias.to(attn_weight.device)
+    if attn_mask is not None:
+        attn_bias = torch.zeros(B, H, L, S, dtype=query.dtype, device=query.device)
+        attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
+        attn_weight += attn_bias
 
-    attn_weight = torch.softmax(attn_weight, dim=-1)
-    attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
-    return attn_weight @ value, attn_weight
+    # TODO if returning attn_weight, should we just modify the attn_weight tensor to be attn_prob?
+    attn_prob = torch.softmax(attn_weight, dim=-1)
+    attn_prob = torch.dropout(attn_prob, dropout_p, train=True)
+    return_logits = kwargs.get("return_attn_logits", False)
+    return attn_prob @ value, attn_weight if return_logits else attn_prob

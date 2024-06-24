@@ -110,7 +110,7 @@ def main(
         model, inputs, max_new_tokens
     )
     max_new_tokens = min(max_new_tokens, max_seq_length - max_prompt_length)
-    setup_caches(model, inputs[0].device, max_seq_length, cache_kwargs)
+    setup_caches(model, tokenizer, inputs[0].device, max_seq_length, cache_kwargs)
     t0 = time.perf_counter()
 
     if (not profile) or (use_tp and rank != 0):

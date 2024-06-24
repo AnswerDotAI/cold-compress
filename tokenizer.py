@@ -1,5 +1,8 @@
+from abc import ABC, abstractmethod
 import itertools
 import os
+import regex as re
+import string
 import sentencepiece as spm
 import tiktoken
 import torch
@@ -17,25 +20,51 @@ from typing import (
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-class TokenizerInterface:
+def is_punc_id(text):
+    # Define a regex pattern that matches any character that is not whitespace or punctuation
+    pattern = rf"^[\s{re.escape(string.punctuation)}]*$"
+    return bool(re.match(pattern, text))
+
+
+class TokenizerInterface(ABC):
     def __init__(self, model_path):
         self.model_path = model_path
         self.vocab = None
 
+    @abstractmethod
     def encode(self, text):
-        raise NotImplementedError("This method should be overridden by subclasses.")
+        pass
 
+    @abstractmethod
     def decode(self, tokens):
-        raise NotImplementedError("This method should be overridden by subclasses.")
+        pass
 
+    @abstractmethod
     def bos_id(self):
-        raise NotImplementedError("This method should be overridden by subclasses.")
+        pass
 
+    @abstractmethod
     def eos_id(self):
-        raise NotImplementedError("This method should be overridden by subclasses.")
+        pass
 
+    @abstractmethod
     def get_terminator_ids(self):
-        raise NotImplementedError("This method should be overridden by subclasses.")
+        pass
+
+    @abstractmethod
+    def special_ids(self) -> List[List[int]]:
+        pass
+
+    @abstractmethod
+    def __len__(self):
+        pass
+
+    @abstractmethod
+    def all_wps(self):
+        pass
+
+    def punctuation_ids(self):
+        return [i for i, wp in enumerate(self.all_wps()) if is_punc_id(wp)]
 
     def get_vocab(self):
         assert (
@@ -47,11 +76,35 @@ class TokenizerInterface:
 class SentencePieceWrapper(TokenizerInterface):
     def __init__(self, model_path):
         super().__init__(model_path)
+        self.model_path = model_path
         self.processor = spm.SentencePieceProcessor(str(model_path))
         self.terminator_ids = [self.processor.eos_id()]
         self.vocab = [
             self.processor.id_to_piece(id)
             for id in range(self.processor.get_piece_size())
+        ]
+
+    def addl_special_ids(self):
+        # If llama-2 in model path, return special tokens for llama-2
+        if "llama-2" in str(self.model_path).lower():
+            special_tokens = ["[INST]", "[/INST]"]
+        else:
+            raise ValueError(f"Unknown model path: {self.model_path}")
+
+        def _encode_special(token):
+            ids = self.processor.EncodeAsIds(token)
+            if len(ids) > 1:
+                print(f"Special token {token} was tokenized into {len(ids)} tokens")
+            return ids
+
+        return list(map(_encode_special, special_tokens))
+
+    def special_ids(self) -> List[List[int]]:
+        # Some of the chat templates aren't given a singular special token so we return a list of lists
+        return [
+            [self.processor.bos_id()],
+            [self.processor.eos_id()],
+            *self.addl_special_ids(),
         ]
 
     def encode(self, text):
@@ -68,6 +121,12 @@ class SentencePieceWrapper(TokenizerInterface):
 
     def get_terminator_ids(self):
         return self.terminator_ids
+
+    def all_wps(self):
+        return [self.processor.id_to_piece(id) for id in range(len(self))]
+
+    def __len__(self):
+        return self.processor.get_piece_size()
 
 
 class TiktokenWrapper(TokenizerInterface):
@@ -119,6 +178,10 @@ class TiktokenWrapper(TokenizerInterface):
     def encode(self, text):
         return self.model.encode(text)
 
+    def special_ids(self) -> List[List[int]]:
+        # Some of the chat templates aren't given a singular special token so we return a list of lists
+        return [[x] for x in list(sorted(self.special_tokens.values()))]
+
     def decode(self, tokens):
         return self.model.decode(tokens)
 
@@ -131,6 +194,17 @@ class TiktokenWrapper(TokenizerInterface):
     def get_terminator_ids(self):
         return self.terminator_ids
 
+    def all_wps(self):
+        return [
+            self.model.decode_single_token_bytes(vocab_id).decode(
+                "utf-8", errors="replace"
+            )
+            for vocab_id in range(len(self))
+        ]
+
+    def __len__(self):
+        return self.model.n_vocab
+
 
 class TokenizersWrapper(TokenizerInterface):
     def __init__(self, model_path):
@@ -140,6 +214,9 @@ class TokenizersWrapper(TokenizerInterface):
         self.vocab = [
             self.tokenizer.decode(i) for i in range(self.tokenizer.vocab_size)
         ]
+
+    def special_ids(self) -> List[List[int]]:
+        return [[x] for x in self.tokenizer.special_token_ids]
 
     def encode(self, text):
         return self.tokenizer.encode(text, add_special_tokens=False)
@@ -155,6 +232,9 @@ class TokenizersWrapper(TokenizerInterface):
 
     def get_terminator_ids(self):
         return self.terminator_ids
+
+    def __len__(self):
+        return len(self.tokenizer)
 
 
 def get_tokenizer(tokenizer_model_path, model_name, is_chat=False):
