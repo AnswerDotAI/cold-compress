@@ -316,8 +316,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--cache_strategy",
         default="full",
-        choices=["full", "random", "window", "scissor"],
+        choices=["full", "random", "window", "scissor", "l2"],
     )
+
+    parser.add_argument(
+        "--prompt_compression_strategy",
+        default="recent_global",
+        choices=["recent_global", "snapkv", "l2"],
+        help="If |prompt| exceeds max_cache_length, we need to specify a strategy for compressing it to max_cache_length.",
+    )
+
     # Optional Cache Kwargs depending on cache_strategy
     parser.add_argument(
         "--global_tokens",
@@ -351,7 +359,14 @@ if __name__ == "__main__":
         "-attn_thresholding",
         default=False,
         action="store_true",
-        help="Whether to accumulate number of times a token was unimportant (binary) versus raw un-normalized probabilities. If true, less precise yet more space efficient.",
+        help="Whether to accumulate number of times a token was unimportant (binary) versus raw un-normalized probabilities. If true, more memory efficient.",
+    )
+
+    parser.add_argument(
+        "--attn_record_freq",
+        default=10,
+        type=int,
+        help="How often to record attention weights for the ScissorHands cache. Higher .",
     )
 
     args = parser.parse_args()
@@ -367,6 +382,12 @@ if __name__ == "__main__":
             [l == 1.0 for l in args.max_cache_length]
         ), "Full cache strategy only supports max_cache_length=1.0."
 
+    # Attention-based eviction policies must use an attention-based prompt compressor
+    if args.cache_strategy in {"scissor"}:
+        assert (
+            args.prompt_compression_strategy == "snapkv"
+        ), 'Scissor requires "snapkv" prompt compression strategy'
+
     cache_kwargs = {
         "cache_strategy": args.cache_strategy,
         "max_cache_length": args.max_cache_length,
@@ -375,6 +396,8 @@ if __name__ == "__main__":
         "drop_amount": args.drop_amount,
         "recent_window": args.recent_window,
         "attn_thresholding": args.attn_thresholding,
+        "prompt_compression_strategy": args.prompt_compression_strategy,
+        "attn_record_freq": args.attn_record_freq,
     }
 
     main(
