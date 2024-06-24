@@ -9,7 +9,11 @@ class PromptCompressor(ABC):
             setattr(self, key, value)
 
         self.head_specific = head_specific
-        self.is_compatible()
+        assert self.is_compatible(), f"Prompt compressor ({self.__class__.__name__}) is not compatible with the chosen cache strategy."
+
+    @abstractmethod
+    def requires_attn(self) -> bool:
+        pass
 
     @abstractmethod
     def __call__(self, *args: torch.Any, **kwds: torch.Any) -> torch.Any:
@@ -28,7 +32,10 @@ class PromptCompressorRecentGlobal(PromptCompressor):
         # Can be used with any cache
         return True
 
-    def __call__(self, input_pos, k_val, v_val, attn):
+    def requires_attn(self) -> bool:
+        return False
+
+    def __call__(self, input_pos, k_val, v_val):
         # [global; ...; window - global] --> [global; window - global]
         # Indices for first global_tokens tokens and last (window - global_tokens) tokens
         # Making this a tensor seems to give a speedup, but I haven't fully benchmarked
@@ -46,7 +53,7 @@ class PromptCompressorRecentGlobal(PromptCompressor):
         assert len(keep_idxs) == self.max_cache_length
         k_val = k_val[:, :, keep_idxs]
         v_val = v_val[:, :, keep_idxs]
-        return input_pos[: self.max_cache_length], k_val, v_val, None
+        return keep_idxs, k_val, v_val
 
 
 class PromptCompressorSnapKV(PromptCompressor):
@@ -64,6 +71,9 @@ class PromptCompressorSnapKV(PromptCompressor):
     def is_compatible(self) -> bool:
         # Can only be used with head-specific KV-caches
         return self.head_specific
+
+    def requires_attn(self) -> bool:
+        return True
 
     def __call__(self, input_pos, k_val, v_val, attn):
         assert self.head_specific, "SnapKV can only be used with head-specific KV-caches, e.g., placing the same token in different locations across heads)."
@@ -100,10 +110,46 @@ class PromptCompressorSnapKV(PromptCompressor):
         return keep_idxs.squeeze(0), k_val_compressed, v_val_compressed, attn_history
 
 
+class PromptCompressorL2(PromptCompressor):
+    def __init__(self, head_specific, **kwargs) -> None:
+        super().__init__(head_specific, **kwargs)
+
+    def is_compatible(self) -> bool:
+        return self.head_specific
+
+    def requires_attn(self) -> bool:
+        return False
+
+    def __call__(self, input_pos, k_val, v_val):
+        key_norm = torch.linalg.vector_norm(k_val, ord=2, dim=-1)
+
+        # Give low score to global and recent tokens
+        locality_mask = torch.logical_or(
+            input_pos < self.global_tokens,
+            input_pos >= input_pos.shape[0] - self.recent_window,
+        ).view(1, 1, -1)
+
+        eviction_scores = key_norm.masked_fill(locality_mask, float("-inf"))
+
+        keep_idxs = (
+            eviction_scores.topk(self.max_cache_length, dim=-1, largest=False)
+            .indices.sort(dim=-1)
+            .values
+        )
+
+        keep_idxs_rep = keep_idxs.unsqueeze(-1).expand(-1, -1, -1, k_val.shape[-1])
+        k_val_compressed = k_val.gather(2, keep_idxs_rep)
+        v_val_compressed = v_val.gather(2, keep_idxs_rep)
+
+        return keep_idxs, k_val_compressed, v_val_compressed
+
+
 def prompt_compressor_constructor(strategy):
     if strategy == "recent_global":
         return PromptCompressorRecentGlobal
     elif strategy == "snapkv":
         return PromptCompressorSnapKV
+    elif strategy == "l2":
+        return PromptCompressorL2
     else:
         raise ValueError(f"Unknown prompt compression strategy: {strategy}")
