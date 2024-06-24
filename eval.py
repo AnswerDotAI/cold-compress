@@ -35,7 +35,7 @@ wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
 from tokenizer import get_tokenizer
-from generate import _load_model, generate, encode_tokens
+from generation_utils import _load_model, generate, encode_tokens
 from task import TASK_MAPPING, AutoTask
 
 
@@ -99,6 +99,7 @@ def main(
             "accept_counts": [],
         }
         predictions = []
+        all_probs = []
         for row in tqdm(task.get_test()):
             prompt = row["prompt"]
             if is_chat:
@@ -119,7 +120,7 @@ def main(
                 torch.profiler._utils._init_for_cuda_graphs()
                 prof = torch.profiler.profile()
             with prof:
-                y, metrics = generate(
+                y, metrics, probs = generate(
                     model,
                     encoded,
                     max_new_tokens=task.max_tokens,
@@ -144,6 +145,10 @@ def main(
                 tokenizer.decode(encoded.tolist())
             )[1]
             predictions.append(pred)
+            if task.requires_logits:
+                all_probs.append(
+                    {k: v for k, v in zip(tokenizer.get_vocab(), probs[0].tolist())}
+                )
             tokens_generated = y.size(0) - prompt_length
             tokens_sec = tokens_generated / t
             aggregate_metrics["tokens_per_sec"].append(tokens_sec)
@@ -155,7 +160,10 @@ def main(
         task_metrics[task_name]["tokens_per_sec"] = torch.mean(
             torch.tensor(aggregate_metrics["tokens_per_sec"])
         ).item()
-        task_metrics[task_name]["task_metrics"] = task.test_metrics(predictions)
+        if task.requires_logits:
+            task_metrics[task_name]["task_metrics"] = task.test_metrics(all_probs)
+        else:
+            task_metrics[task_name]["task_metrics"] = task.test_metrics(predictions)
         print(task_metrics[task_name]["task_metrics"])
 
 
@@ -170,7 +178,7 @@ if __name__ == "__main__":
         "--tasks",
         type=str,
         nargs="+",
-        default=["squality"],
+        default=["truthfulqa"],
         choices=list(TASK_MAPPING.keys()),
         help="List of tasks to be evaluated.",
     )

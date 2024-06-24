@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
+from string import ascii_uppercase
 
+import numpy as np
 from datasets import load_dataset
 
 from metric import AutoMetric
@@ -10,6 +12,7 @@ class EvaluationTask(ABC):
     validation_split: str = "validation"
     test_split: str = "test"
     mandatory_cols = ["context", "question", "prompt", "labels"]
+    requires_logits = False
 
     def __init__(self, prompt_template, max_tokens, hf_args=None, **kwargs):
         self.prompt_template = prompt_template
@@ -57,7 +60,7 @@ class EvaluationTask(ABC):
         assert (
             len(dataset) == len(predictions)
         ), f"Number of predictions and labels must match ({len(predictions)} != {len(dataset)})."
-        return self._compute_metrics(predictions, dataset)
+        return self._compute_metrics(predictions, dataset["labels"])
 
     def _compute_metrics(self, predictions: list, labels: list[str | list[str]]):
         return {
@@ -98,13 +101,29 @@ class EvaluationTask(ABC):
         pass
 
 
-class Squality(EvaluationTask):
-    DEFAULT_PROMPT_TEMPLATE = """You are given a story and a question. Answer the question in a paragraph.
+class LogitEvaluationTask(EvaluationTask):
+    def __init__(self, prompt_template, max_tokens, hf_args=None, **kwargs):
+        super().__init__(prompt_template, max_tokens, hf_args, **kwargs)
+        self.requires_logits = True
 
-Story:
+    @abstractmethod
+    def _process_logits(self, logits, split):
+        """Process logits and return predictions."""
+        pass
+
+    def compute_metrics(self, predictions, split, dataset):
+        # LogitEvaluationTask will get logits instead of token predictions, so we need to process them first
+        predictions = self._process_logits(predictions, split)
+        return super().compute_metrics(predictions, split, dataset)
+
+
+class Squality(EvaluationTask):
+    DEFAULT_PROMPT_TEMPLATE = """You are given a story and a question. Answer the question in a single paragraph.
+
+====STORY====
 {story}
 
-Question:
+====QUESTION====
 {question}"""
 
     def __init__(
@@ -201,22 +220,218 @@ Question:
         }
 
 
-class ScrollsQuality(EvaluationTask):
+class Dolomites(EvaluationTask):
+    DEFAULT_PROMPT_TEMPLATE = """You need to perform a writing task from the field of {field}.
+You are given (1) a task description which contains input and output sections, and (2) an example input for this task, which is a sample of the input sections of the task with concrete details.
+You need to generate the output sections for the given example input.
+
+IMPORTANT:
+- Make sure the length of each output section matches the required length and the section headers are exactly the same.
+- Make sure the output follows the structure of the output sections in the task description, is factually accurate and detailed.
+
+====TASK DESCRIPTION====
+{task_description}
+
+====EXAMPLE INPUT====
+{example_input}"""
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1024, **kwargs
+    ):
+        super().__init__(
+            prompt_template, max_tokens, hf_args=["fladhak/dolomites"], **kwargs
+        )
+
+        # Dolomites test split does not have references, so we will use validation split for testing
+        self.test_split = "validation"
+
+        self.metrics = {
+            "BertScore": AutoMetric.from_name("bertscore"),
+            "Rouge": AutoMetric.from_name("rouge"),
+        }
+
+    def prepare_row(self, row: dict):
+        field = row["field"]
+        task_objective = row["task_objective"]
+        task_procedure = row["task_procedure"]
+        task_input = row["task_input"]
+        task_output = row["task_output"]
+        task_notes = row["task_notes"]
+        example_input = row["example_input"]
+        ref = row["example_output"]
+
+        task_description = f"Task objective: {task_objective}\nTask prodecedure: {task_procedure}\nTask input: {task_input}\nTask output: {task_output}"
+        if task_notes is not None:
+            task_description += f"\nAdditional notes: {task_notes}"
+
+        prompt = self.prompt_template.format(
+            field=field, task_description=task_description, example_input=example_input
+        )
+
+        return {
+            "prompt": prompt,
+            "field": field,
+            "context": task_description,
+            "question": example_input,
+            "labels": ref,
+        }
+
+
+class QMSum(EvaluationTask):
+    DEFAULT_PROMPT_TEMPLATE = """You will be shown a meeting transcipt along with a query. Your task is to carefully read the transcript and provide a concise answer to the query.
+
+====MEETING TRANSCRIPT====
+{transcript}
+
+====Query====
+{query}"""
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1024, **kwargs
+    ):
+        super().__init__(
+            prompt_template, max_tokens, hf_args=["fladhak/qmsum"], **kwargs
+        )
+
+        self.metrics = {
+            "BertScore": AutoMetric.from_name("bertscore"),
+            "Rouge": AutoMetric.from_name("rouge"),
+        }
+
+    def prepare_row(self, row: dict):
+        transcript = "\n\n".join(
+            [f"{x['speaker']}: {x['content']}" for x in row["transcript"]]
+        )
+        query = row["query"]
+        answer = row["answer"]
+
+        prompt = self.prompt_template.format(transcript=transcript, query=query)
+
+        return {
+            "prompt": prompt,
+            "context": transcript,
+            "labels": answer,
+        }
+
+
+class Musique(EvaluationTask):
+    DEFAULT_PROMPT_TEMPLATE = """You will be shown several paragraphs from Wikipedia along with a question. Your task is to carefully read the paragraphs and provide a concise answer to the question.
+IMPORTANT: You should only use the infomation provided in the paragraphs to answer the question.
+
+====PARAGRAPHS====
+{paragraphs}
+
+====QUESTION====
+{question}"""
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=128, **kwargs
+    ):
+        super().__init__(
+            prompt_template, max_tokens, hf_args=["fladhak/musique"], **kwargs
+        )
+
+        # Musique test split does not have references, so we will use validation split for testing
+        self.test_split = "validation"
+
+        self.metrics = {
+            "BertScore": AutoMetric.from_name("bertscore"),
+            "Rouge": AutoMetric.from_name("rouge"),
+        }
+
+    def prepare_row(self, row: dict):
+        paragraphs = "\n\n".join(
+            [f"{x['title']}:\n{x['paragraph_text']}" for x in row["paragraphs"]]
+        )
+        question = row["question"]
+        answers = [row["answer"]] + row["answer_aliases"]
+
+        prompt = self.prompt_template.format(paragraphs=paragraphs, question=question)
+
+        return {
+            "prompt": prompt,
+            "context": paragraphs,
+            "question": question,
+            "labels": answers,
+        }
+
+
+class TruthfulQA(LogitEvaluationTask):
+    DEFAULT_PROMPT_TEMPLATE = """You will be shown a question along with several possible answers. Please carefully read the question and the answer choices and pick the best answer.
+IMPORTANT: You should simply provide the letter corresponding to the answer choice that you picked. You do not need to write out the entire answer or provide any explanation.
+
+Question:
+{question}
+
+Answer choices:
+{choices}"""
+
+    def __init__(self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1, **kwargs):
+        super().__init__(
+            prompt_template,
+            max_tokens,
+            hf_args=["truthfulqa/truthful_qa", "multiple_choice"],
+            **kwargs,
+        )
+
+        # Musique test split does not have references, so we will use validation split for testing
+        self.test_split = "validation"
+
+        self.metrics = {
+            "Accuracy": AutoMetric.from_name("accuracy"),
+        }
+        self.mandatory_cols.append("num_choices")
+
+    def prepare_row(self, row: dict):
+        question = row["question"]
+        choices = "\n".join(
+            [
+                f"{char}. {opt}"
+                for char, opt in zip(ascii_uppercase, row["mc1_targets"]["choices"])
+            ]
+        )
+        answer = ascii_uppercase[row["mc1_targets"]["labels"].index(1)]
+
+        prompt = self.prompt_template.format(question=question, choices=choices)
+
+        return {
+            "prompt": prompt,
+            "question": question,
+            "context": choices,
+            "labels": answer,
+            "num_choices": len(row["mc1_targets"]["choices"]),
+        }
+
+    def _process_logits(self, logits, split):
+        preds = []
+        for l, nc in zip(logits, self.get_split(split)["num_choices"]):
+            pred = [l[ascii_uppercase[i]] for i in range(nc)]
+            preds.append(ascii_uppercase[np.argmax(pred)])
+
+        return preds
+
+
+class ScrollsQuality(LogitEvaluationTask):
     """
     Evaluation dataset derived from `tau/scrolls`.
     It is processed into a suitable format here: https://huggingface.co/datasets/rbiswasfc/quality.
     Test split doesn't have ground truths, hence it will use validation split as an alternative.
     """
 
-    test_split: str = "validation"
-
-    DEFAULT_PROMPT_TEMPLATE = """You are given a question and a relevant context. Answer the question without any explanation.
+    DEFAULT_PROMPT_TEMPLATE = """You will be given a context, a question related to that context, and four possible answer choices. Carefully read the context, question, and answer choices, then select the best answer.
+IMPORTANT: Provide only the letter corresponding to your chosen answer. Do not write out the full answer or give any explanation.
 
 Context:
 {context}
 
 Question:
-{question}"""
+{question}
+
+Answer choices:
+{choices}
+
+Answer:
+"""
 
     def __init__(
         self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=128, **kwargs
@@ -226,28 +441,50 @@ Question:
         )
 
         self.metrics = {
-            "BertScore": AutoMetric.from_name("bertscore"),
-            "Rouge": AutoMetric.from_name("rouge"),
+            "Accuracy": AutoMetric.from_name("accuracy"),
         }
+        self.test_split = "validation"  #     Test split doesn't have ground truths - use validation split
+
+        self.mandatory_cols.append("num_choices")
 
     def prepare_row(self, row: dict):
         context = row["context"]
         question = row["question"]
         choices = row["choices"]
-        answer = choices[row["label"]]
+        num_choices = len(choices)
+        answer = ascii_uppercase[row["label"]]
+
+        choices = "\n".join(
+            [f"{char}. {opt}" for char, opt in zip(ascii_uppercase, choices)]
+        )
 
         return {
             "context": context,
             "question": question,
-            "prompt": self.prompt_template.format(context=context, question=question),
+            "prompt": self.prompt_template.format(
+                context=context, question=question, choices=choices
+            ),
             "labels": answer,
+            "num_choices": num_choices,
         }
+
+    def _process_logits(self, logits, split):
+        preds = []
+        for l, nc in zip(logits, self.get_split(split)["num_choices"]):
+            pred = [l[ascii_uppercase[i]] for i in range(nc)]
+            preds.append(ascii_uppercase[np.argmax(pred)])
+
+        return preds
 
 
 TASK_MAPPING = {
     "squality": Squality,
     "triviaqa": TriviaQA,
-    "scrolls_quality": ScrollsQuality,
+    "dolomites": Dolomites,
+    "qmsum": QMSum,
+    "musique": Musique,
+    "truthfulqa": TruthfulQA,
+    "scrollsquality": ScrollsQuality,
 }
 
 
