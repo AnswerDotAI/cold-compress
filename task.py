@@ -1,7 +1,9 @@
-import numpy as np
 from abc import ABC, abstractmethod
 from string import ascii_uppercase
+
+import numpy as np
 from datasets import load_dataset
+
 from metric import AutoMetric
 
 
@@ -409,6 +411,72 @@ Answer choices:
         return preds
 
 
+class ScrollsQuality(LogitEvaluationTask):
+    """
+    Evaluation dataset derived from `tau/scrolls`.
+    It is processed into a suitable format here: https://huggingface.co/datasets/rbiswasfc/quality.
+    Test split doesn't have ground truths, hence it will use validation split as an alternative.
+    """
+
+    DEFAULT_PROMPT_TEMPLATE = """You will be given a context, a question related to that context, and four possible answer choices. Carefully read the context, question, and answer choices, then select the best answer.
+IMPORTANT: Provide only the letter corresponding to your chosen answer. Do not write out the full answer or give any explanation.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer choices:
+{choices}
+
+Answer:
+"""
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=128, **kwargs
+    ):
+        super().__init__(
+            prompt_template, max_tokens, hf_args=["rbiswasfc/quality"], **kwargs
+        )
+
+        self.metrics = {
+            "Accuracy": AutoMetric.from_name("accuracy"),
+        }
+        self.test_split = "validation"  #     Test split doesn't have ground truths - use validation split
+
+        self.mandatory_cols.append("num_choices")
+
+    def prepare_row(self, row: dict):
+        context = row["context"]
+        question = row["question"]
+        choices = row["choices"]
+        num_choices = len(choices)
+        answer = ascii_uppercase[row["label"]]
+
+        choices = "\n".join(
+            [f"{char}. {opt}" for char, opt in zip(ascii_uppercase, choices)]
+        )
+
+        return {
+            "context": context,
+            "question": question,
+            "prompt": self.prompt_template.format(
+                context=context, question=question, choices=choices
+            ),
+            "labels": answer,
+            "num_choices": num_choices,
+        }
+
+    def _process_logits(self, logits, split):
+        preds = []
+        for l, nc in zip(logits, self.get_split(split)["num_choices"]):
+            pred = [l[ascii_uppercase[i]] for i in range(nc)]
+            preds.append(ascii_uppercase[np.argmax(pred)])
+
+        return preds
+
+
 TASK_MAPPING = {
     "squality": Squality,
     "triviaqa": TriviaQA,
@@ -416,6 +484,7 @@ TASK_MAPPING = {
     "qmsum": QMSum,
     "musique": Musique,
     "truthfulqa": TruthfulQA,
+    "scrollsquality": ScrollsQuality,
 }
 
 
