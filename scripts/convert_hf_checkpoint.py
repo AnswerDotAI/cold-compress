@@ -67,7 +67,9 @@ def convert_hf_checkpoint(
             # For larger models, the weights are stored in separate files, so we need to load the index.
             with open(model_map_json) as json_map:
                 bin_index = json.load(json_map)
-            bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
+            bin_files = {
+                checkpoint_dir / bin for bin in bin_index["weight_map"].values()
+            }
         else:
             # For smaller models, the weights are stored in a single file.
             # Note it could be a bin file or a safetensors file.
@@ -151,7 +153,9 @@ def convert_hf_checkpoint(
                 del final_result[key.replace("wq", "wv")]
         if "output.weight" not in final_result:
             # lm_head.weight may not be explicitly stored in the HF checkpoint if input and output embeddings are shared
-            final_result["output.weight"] = final_result["tok_embeddings.weight"].clone()
+            final_result["output.weight"] = final_result[
+                "tok_embeddings.weight"
+            ].clone()
     else:
         final_result = merged_result
     if is_llama3:

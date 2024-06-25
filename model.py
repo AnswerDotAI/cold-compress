@@ -208,7 +208,7 @@ class Transformer(nn.Module):
         x = self.tok_embeddings(idx)
 
         for i, layer in enumerate(self.layers):
-            x = layer(x, input_pos, freqs_cis, mask)
+            x = layer(x, idx, input_pos, freqs_cis, mask)
         x = self.norm(x)
         logits = self.output(x)
         return logits
@@ -227,9 +227,16 @@ class TransformerBlock(nn.Module):
         self.attention_norm = RMSNorm(config.dim, config.norm_eps)
 
     def forward(
-        self, x: Tensor, input_pos: Tensor, freqs_cis: Tensor, mask: Tensor
+        self,
+        x: Tensor,
+        input_ids: Tensor,
+        input_pos: Tensor,
+        freqs_cis: Tensor,
+        mask: Tensor,
     ) -> Tensor:
-        h = x + self.attention(self.attention_norm(x), freqs_cis, mask, input_pos)
+        h = x + self.attention(
+            self.attention_norm(x), input_ids, freqs_cis, mask, input_pos
+        )
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
@@ -261,6 +268,7 @@ class Attention(nn.Module):
     def forward(
         self,
         x: Tensor,
+        input_ids: Tensor,
         freqs_cis: Tensor,
         mask: Tensor,
         input_pos: Optional[Tensor] = None,
@@ -279,18 +287,25 @@ class Attention(nn.Module):
 
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
-        k, v, attn_callback = self.kv_cache.update(input_pos, k, v)
+        k, v, kv_mask, attn_callback = self.kv_cache.update(
+            input_pos, k, v, input_ids=input_ids
+        )
 
         k_rep = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
         v_rep = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
+        if kv_mask is not None:
+            kv_mask = kv_mask.repeat_interleave(
+                self.n_head // self.n_local_heads, dim=1
+            )
+
         y, attn = scaled_dot_product_attention(
             q,
             k_rep,
             v_rep,
-            is_causal=False,
-            attn_mask=mask,
+            attn_mask=mask if mask is not None else kv_mask,
             dropout_p=0.0,
-            return_attn=attn_callback is not None,
+            return_attn=attn_callback and attn_callback["func"] is not None,
+            **{} if attn_callback is None else attn_callback.get("kwargs", {}),
         )
 
         if attn_callback:
@@ -298,7 +313,7 @@ class Attention(nn.Module):
             attn = attn.view(
                 bsz, self.n_local_heads, self.n_head // self.n_local_heads, seqlen, -1
             ).mean(dim=2)
-            attn_callback(input_pos, k, v, attn)
+            attn_callback["func"](input_pos, input_ids, k, v, attn)
 
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 

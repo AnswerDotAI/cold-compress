@@ -84,6 +84,13 @@ def main(
 
     tokenizer = get_tokenizer(tokenizer_path, checkpoint_path, is_chat=is_chat)
 
+    if cache_kwargs["cache_strategy"] == "fastgen":
+        # We need to pass the special and punctuation token ids to the cache via cache_kwargs
+        cache_kwargs["token_ids"] = {
+            "special": tokenizer.special_ids(),
+            "punctuation": tokenizer.punctuation_ids(),
+        }
+
     terminator_ids = tokenizer.get_terminator_ids()
 
     torch.manual_seed(1234)
@@ -117,7 +124,7 @@ def main(
         _, max_seq_length = compute_max_seq_length(model, inputs, task.max_tokens)
 
         print(f"Maximum context length of {max_seq_length} tokens.")
-        setup_caches(model, inputs[0].device, max_seq_length, task_cache_kwargs)
+        setup_caches(model, tokenizer, inputs[0].device, max_seq_length, task_cache_kwargs)
 
         for i in tqdm(range(len(inputs))):
             inputs[i] = inputs[i].to(device)

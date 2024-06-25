@@ -8,6 +8,7 @@ import torch._dynamo.config
 import torch._inductor.config
 
 from model import Transformer, find_multiple
+from tokenizer import TokenizerInterface
 
 
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -135,6 +136,7 @@ def normalize_cache_length(
 
 def setup_caches(
     model: Transformer,
+    tokenizer: TokenizerInterface,
     device: torch.device,
     max_seq_length: int,
     cache_kwargs: dict = None,
@@ -165,6 +167,13 @@ def setup_caches(
     assert cache_kwargs["global_tokens"] <= min(
         cache_kwargs["max_cache_length"]
     ), "Global tokens must be less than max_cache_length."
+
+    if cache_kwargs["cache_strategy"] == "fastgen":
+        # We need to pass the special and punctuation token ids to the cache via cache_kwargs
+        cache_kwargs["token_ids"] = {
+            "special": tokenizer.special_ids(),
+            "punctuation": tokenizer.punctuation_ids(),
+        }
 
     with torch.device(device):
         model.setup_caches(max_batch_size=1, **cache_kwargs)
