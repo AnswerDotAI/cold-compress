@@ -107,7 +107,8 @@ def main(
         )
         prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
 
-    eval_tasks = {task: AutoTask.from_name(task) for task in tasks}
+    task_kwargs = {"debug": args.debug}
+    eval_tasks = {task: AutoTask.from_name(task, **task_kwargs) for task in tasks}
 
     task_metrics = defaultdict(dict)
     for task_name, task in eval_tasks.items():
@@ -200,6 +201,10 @@ if __name__ == "__main__":
         default=["truthfulqa"],
         choices=list(TASK_MAPPING.keys()),
         help="List of tasks to be evaluated.",
+    )
+
+    parser.add_argument(
+        "--debug", default=False, action="store_true", help="Debug mode uses first 10 examples in dataset."
     )
 
     parser.add_argument(

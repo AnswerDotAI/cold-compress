@@ -18,9 +18,10 @@ class EvaluationTask(ABC):
         self.prompt_template = prompt_template
         self.max_tokens = max_tokens
         self.hf_args = hf_args
+        self.debug = kwargs.pop("debug", False)
 
         # Download the dataset
-        self._download(**kwargs)
+        self._download()
 
         # Lazy process each split as needed
         self.is_ready = {
@@ -40,7 +41,12 @@ class EvaluationTask(ABC):
             if col not in self.mandatory_cols
         ]
         if not self.is_ready[split]:
-            self.dataset[split] = self.dataset[split].map(
+            split_data = self.dataset[split]
+            if self.debug:
+                n = min(10, len(split_data))
+                print(f"Taking first {n} examples")
+                split_data = split_data.select(range(n))
+            self.dataset[split] = split_data.map(
                 self.prepare_batch, batched=True, remove_columns=remove_cols
             )
         self.is_ready[split] = True
@@ -510,7 +516,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--task", type=str, default="triviaqa", choices=TASK_MAPPING.keys()
     )
-
     args = parser.parse_args()
 
     task = AutoTask.from_name(args.task)

@@ -59,7 +59,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
     )
     group.add_argument(
         "--drop_amount",  # Equivalent to "m" in Algorithm 2.
-        default=0.5,  # 0.4 is default specified in paper.
+        default=0.4,  # 0.4 is default specified in paper.
         type=float,
         help="The number of tokens to evict KV-Cache reaches capacity (max_cache_length). Expressed as a fraction of max_cache_length.",
     )
@@ -73,7 +73,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         "--attn_record_freq",
         default=10,
         type=int,
-        help="How often to record attention weights for the ScissorHands cache..",
+        help="How often to record attention weights for the ScissorHands cache.",
     )
 
     # FastGen-specific Hyperparameters (--cache_strategy == "fastgen")
@@ -646,7 +646,7 @@ class KVCacheScissorhands(KVCacheWindow):
         self.attn_counter.zero_()
         self.eviction_queue.zero_()
         # Start with an "empty queue" so that we can fill it up
-        self.eviction_idx.fill(self.drop_amount)
+        self.eviction_idx.fill_(self.drop_amount)
         assert self.queue_len() == 0
 
     def queue_len(self):
