@@ -3,9 +3,9 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-import itertools
 import sys
 import time
+import contextlib
 from pathlib import Path
 from typing import Optional
 
@@ -14,17 +14,13 @@ import torch._dynamo.config
 import torch._inductor.config
 
 from cache import add_cache_arguments
-from generation_utils import decode_one_token, prefill
-
-
-def device_sync(device):
-    if "cuda" in device:
-        torch.cuda.synchronize(device)
-    elif ("cpu" in device) or ("mps" in device):
-        pass
-    else:
-        print(f"device={device} is not yet suppported")
-
+from generation_utils import (
+    decode_one_token,
+    prefill,
+    device_sync,
+    compute_max_seq_length,
+)
+from tokenizer import encode
 
 torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
@@ -36,31 +32,13 @@ default_device = "cuda" if torch.cuda.is_available() else "cpu"
 wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
-from tokenizer import get_tokenizer
-from generation_utils import generate, encode_tokens, _load_model
+from tokenizer import get_tokenizer, encode
+from generation_utils import generate, load_model, get_model_size, setup_caches
 from cache import add_cache_arguments, cache_compatibility
-
-
-def _get_model_size(model):
-    model_size = 0
-    for name, child in model.named_children():
-        if not isinstance(child, torch.nn.Embedding):
-            model_size += sum(
-                [
-                    p.numel() * p.dtype.itemsize
-                    for p in itertools.chain(child.parameters(), child.buffers())
-                ]
-            )
-    return model_size
-
-
-B_INST, E_INST = "[INST]", "[/INST]"
 
 
 def main(
     prompt: str = "Hello, my name is",
-    interactive: bool = False,
-    num_samples: int = 5,
     max_new_tokens: int = 100,
     top_k: int = 200,
     temperature: float = 0.8,
@@ -68,10 +46,7 @@ def main(
         "checkpoints/meta-Transformer/Transformer-2-7b-chat-hf/model.pth"
     ),
     compile: bool = True,
-    compile_prefill: bool = False,
     profile: Optional[Path] = None,
-    draft_checkpoint_path: Optional[Path] = None,
-    speculate_k: int = 5,
     device=default_device,
     cache_kwargs: dict = {},
 ) -> None:
@@ -96,7 +71,6 @@ def main(
 
     print(f"Using device={device}")
     precision = torch.bfloat16
-    is_speculative = draft_checkpoint_path is not None
     is_chat = (
         "chat" in str(checkpoint_path).lower()
         or "instruct" in str(checkpoint_path).lower()
@@ -104,143 +78,73 @@ def main(
 
     print("Loading model ...")
     t0 = time.time()
-    model = _load_model(checkpoint_path, device, precision, use_tp)
-
-    if is_speculative:
-        draft_model = _load_model(draft_checkpoint_path, device, precision, use_tp)
-    else:
-        draft_model = None
+    model = load_model(checkpoint_path, device, precision, use_tp)
 
     device_sync(device=device)  # MKG
     print(f"Time to load model: {time.time() - t0:.02f} seconds")
 
     tokenizer = get_tokenizer(tokenizer_path, checkpoint_path, is_chat=is_chat)
 
-    if is_chat:
-        tokens = tokenizer.encode_prompt(prompt)
-        encoded = torch.tensor(tokens, dtype=torch.int, device=device)
-    else:
-        encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
-    prompt_length = encoded.size(0)
+    inputs = [encode(tokenizer, prompt, device=device, is_chat=is_chat)]
 
-    if args.no_terminators:
-        terminator_ids = None
-    else:
-        terminator_ids = tokenizer.get_terminator_ids()
+    terminator_ids = tokenizer.get_terminator_ids()
 
     torch.manual_seed(1234)
-    model_size = _get_model_size(model)
+    model_size = get_model_size(model)
     print(f"{model_size / 1e9:.02f} billion parameters in model.")
 
     if compile:
-        if is_speculative and use_tp:  # and ("cuda" in device):
-            torch._inductor.config.triton.cudagraph_trees = (
-                False  # Bug with cudagraph trees in this case
-            )
-
-        if is_speculative:
-            global model_forward, logits_to_prob
-            model_forward = torch.compile(
-                model_forward, mode="reduce-overhead", fullgraph=True
-            )
-
         global decode_one_token, prefill
         decode_one_token = torch.compile(
             decode_one_token, mode="reduce-overhead", fullgraph=True
         )
-
-        # Uncomment to squeeze more perf out of prefill
-        if compile_prefill:
-            prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
+        prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
 
     aggregate_metrics = {
         "tokens_per_sec": [],
-        "accept_counts": [],
     }
-    start = -1 if compile else 0
 
-    for i in range(start, num_samples):
-        device_sync(device=device)  # MKG
-        if i >= 0 and interactive:
-            prompt = input("What is your prompt? ")
-            if is_chat:
-                tokens = tokenizer.encode_prompt(prompt)
-                encoded = torch.tensor(tokens, dtype=torch.int, device=device)
-            else:
-                encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
+    device_sync(device=device)  # MKG
 
-        if interactive and i >= 0:
-            buffer = []
-            period_id = tokenizer.encode(".")[0]
-            done_generating = False
+    max_prompt_length, max_seq_length = compute_max_seq_length(
+        model, inputs, max_new_tokens
+    )
+    max_new_tokens = min(max_new_tokens, max_seq_length - max_prompt_length)
+    setup_caches(model, inputs[0].device, max_seq_length, cache_kwargs)
+    t0 = time.perf_counter()
 
-            def callback(x):
-                nonlocal done_generating
-                if done_generating:
-                    return
-                buffer.append(tokenizer.decode([period_id] + x.tolist())[1:])
-                if x.item() == tokenizer.eos_id():
-                    done_generating = True
-                if len(buffer) == 4 or done_generating:
-                    print("".join(buffer), end="", flush=True)
-                    buffer.clear()
-                # print(, end='', flush=True)
-        else:
-            callback = lambda x: x
-        t0 = time.perf_counter()
-        import contextlib
+    if (not profile) or (use_tp and rank != 0):
+        prof = contextlib.nullcontext()
+    else:
+        torch.profiler._utils._init_for_cuda_graphs()
+        prof = torch.profiler.profile()
 
-        if (i != num_samples - 1 or not profile) or (use_tp and rank != 0):
-            prof = contextlib.nullcontext()
-        else:
-            torch.profiler._utils._init_for_cuda_graphs()
-            prof = torch.profiler.profile()
-        with prof:
-            y, metrics, _ = generate(
-                model,
-                encoded,
-                max_new_tokens,
-                draft_model=draft_model,
-                speculate_k=speculate_k,
-                interactive=interactive,
-                callback=callback,
-                temperature=temperature,
-                top_k=top_k,
-                terminator_ids=terminator_ids,
-                cache_kwargs=cache_kwargs,
-            )
-            aggregate_metrics["accept_counts"].append(metrics["accept_counts"])
-        if i == -1:
-            print(f"Compilation time: {time.perf_counter() - t0:.2f} seconds")
-            continue
-        if hasattr(prof, "export_chrome_trace"):
-            if use_tp:
-                prof.export_chrome_trace(f"{profile}_rank_{rank}.json")
-            else:
-                prof.export_chrome_trace(f"{profile}.json")
-        device_sync(device=device)  # MKG
-        t = time.perf_counter() - t0
-
-        if not interactive:
-            print(tokenizer.decode(y.tolist()))
-        else:
-            print()
-        tokens_generated = y.size(0) - prompt_length
-        tokens_sec = tokens_generated / t
-        aggregate_metrics["tokens_per_sec"].append(tokens_sec)
-        print(
-            f"Time for inference {i + 1}: {t:.02f} sec total, {tokens_sec:.02f} tokens/sec"
+    with prof:
+        y, _ = generate(
+            model,
+            inputs[0],
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            terminator_ids=terminator_ids,
         )
-        print(f"Tokens generated: {tokens_generated}")
-        print(f"Bandwidth achieved: {model_size * tokens_sec / 1e9:.02f} GB/s")
+    print(f"Compilation time: {time.perf_counter() - t0:.2f} seconds")
+    if hasattr(prof, "export_chrome_trace"):
+        if use_tp:
+            prof.export_chrome_trace(f"{profile}_rank_{rank}.json")
+        else:
+            prof.export_chrome_trace(f"{profile}.json")
+    device_sync(device=device)  # MKG
+    t = time.perf_counter() - t0
+
+    print(tokenizer.decode(y.tolist()))
+    tokens_generated = y.size(0) - max_prompt_length
+    tokens_sec = tokens_generated / t
+    aggregate_metrics["tokens_per_sec"].append(tokens_sec)
+    print(f"Time for inference: {t:.02f} sec total, {tokens_sec:.02f} tokens/sec")
+    print(f"Tokens generated: {tokens_generated}")
+    print(f"Bandwidth achieved: {model_size * tokens_sec / 1e9:.02f} GB/s")
     print("==========")
-    if is_speculative:
-        counts_aggregated = [sum(i) for i in zip(*aggregate_metrics["accept_counts"])]
-        acceptance_probs = [i / sum(counts_aggregated) for i in counts_aggregated]
-        print(f"Acceptance probs: {acceptance_probs}")
-        print(
-            f"Mean Accepted: {sum([idx * i for idx, i in enumerate(counts_aggregated)])/sum(counts_aggregated)}"
-        )
 
     print(
         f"Average tokens/sec: {torch.mean(torch.tensor(aggregate_metrics['tokens_per_sec'])).item():.2f}"
@@ -251,7 +155,9 @@ def main(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Your CLI description.")
+    parser = argparse.ArgumentParser(
+        description="Run Simple Single Prompt Generation (for development and debugging purposes)."
+    )
 
     parser.add_argument(
         "--prompt",
@@ -259,25 +165,12 @@ if __name__ == "__main__":
         default="long_prompt_short_output.txt",
         help="Input prompt. If it ends in .txt, we will load the prompt from the ./prompts dir.",
     )
-
-    parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="Whether to launch in interactive mode",
-    )
-    parser.add_argument("--num_samples", type=int, default=1, help="Number of samples.")
     parser.add_argument(
         "--max_new_tokens", type=int, default=512, help="Maximum number of new tokens."
     )
     parser.add_argument("--top_k", type=int, default=200, help="Top-k for sampling.")
     parser.add_argument(
         "--temperature", type=float, default=0.8, help="Temperature for sampling."
-    )
-    parser.add_argument(
-        "-no_terminators",
-        default=False,
-        action="store_true",
-        help="If you want the model to generate the full max tokens. Useful for profiling memory.",
     )
     parser.add_argument(
         "--checkpoint_path",
@@ -289,21 +182,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--compile", action="store_true", help="Whether to compile the model."
     )
-    parser.add_argument(
-        "--compile_prefill",
-        action="store_true",
-        help="Whether to compile the prefill (improves prefill perf, but higher compile times)",
-    )
     parser.add_argument("--profile", type=Path, default=None, help="Profile path.")
-    parser.add_argument(
-        "--speculate_k", type=int, default=5, help="Speculative execution depth."
-    )
-    parser.add_argument(
-        "--draft_checkpoint_path",
-        type=Path,
-        default=None,
-        help="Draft checkpoint path.",
-    )
     parser.add_argument(
         "--device", type=str, default=default_device, help="Device to use"
     )
@@ -321,17 +200,12 @@ if __name__ == "__main__":
 
     main(
         args.prompt,
-        args.interactive,
-        args.num_samples,
         args.max_new_tokens,
         args.top_k,
         args.temperature,
         args.checkpoint_path,
         args.compile,
-        args.compile_prefill,
         args.profile,
-        args.draft_checkpoint_path,
-        args.speculate_k,
         args.device,
         cache_kwargs=vars(args),
     )

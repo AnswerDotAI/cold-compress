@@ -193,6 +193,10 @@ class Transformer(nn.Module):
             dtype,
         )
 
+    def reset_caches(self):
+        for layer in self.layers:
+            layer.attention.kv_cache.reset()
+
     def forward(
         self,
         idx: Tensor,

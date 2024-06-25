@@ -2,6 +2,7 @@ import itertools
 import os
 import sentencepiece as spm
 import tiktoken
+import torch
 from tiktoken.load import load_tiktoken_bpe
 from transformers import AutoTokenizer
 from pathlib import Path
@@ -11,6 +12,9 @@ from typing import (
     Literal,
     TypedDict,
 )
+
+
+default_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 class TokenizerInterface:
@@ -249,3 +253,20 @@ class TokenizersChatFormat(TokenizersWrapper):
             dialog, tokenize=False, add_generation_prompt=True
         )
         return self.encode(text)
+
+
+def encode_tokens(tokenizer, string, bos=True, device=default_device):
+    tokens = tokenizer.encode(string)
+    if bos:
+        tokens = [tokenizer.bos_id()] + tokens
+    return torch.tensor(tokens, dtype=torch.int, device=device)
+
+
+def encode(tokenizer, prompt, device=default_device, is_chat=True):
+    if is_chat:
+        tokens = tokenizer.encode_prompt(prompt)
+        encoded = torch.tensor(tokens, dtype=torch.int, device=device)
+    else:
+        encoded = encode_tokens(tokenizer, prompt, device=device, bos=True)
+
+    return encoded

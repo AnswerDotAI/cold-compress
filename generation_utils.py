@@ -1,7 +1,6 @@
 import itertools
 import sys
 import time
-from pathlib import Path
 from typing import Optional, Tuple
 
 import torch
@@ -12,6 +11,28 @@ from model import Transformer, find_multiple
 
 
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def compute_max_seq_length(model, prompt_lens, max_new_tokens) -> int:
+    max_prompt_length = max(len(prompt_lens[i]) for i in range(len(prompt_lens)))
+    max_seq_length = max_prompt_length + max_new_tokens
+    if max_seq_length > model.config.block_size:
+        print(
+            f"Warning: The longest prompt puts the desired max_seq_length at {max_seq_length}, which is greater than models max of {model.config.block_size}."
+        )
+        print(f"Setting to model's max_seq_length of {model.config.block_size}.")
+        max_seq_length = model.config.block_size
+    print(f"Maximum context length of {max_seq_length} tokens.")
+    return max_prompt_length, max_seq_length
+
+
+def device_sync(device):
+    if "cuda" in device:
+        torch.cuda.synchronize(device)
+    elif ("cpu" in device) or ("mps" in device):
+        pass
+    else:
+        print(f"device={device} is not yet suppported")
 
 
 def multinomial_sample_one_no_sync(
@@ -67,7 +88,6 @@ def decode_n_tokens(
     input_pos: torch.Tensor,
     num_new_tokens: int,
     terminator_ids: Optional[list] = None,
-    callback=lambda _: _,
     **sampling_kwargs,
 ):
     new_tokens, new_probs = [], []
@@ -84,7 +104,6 @@ def decode_n_tokens(
 
             input_pos += 1
             new_tokens.append(next_token.clone())
-            callback(new_tokens[-1])
             new_probs.append(next_prob.clone())
             cur_token = next_token.view(1, -1)
 
@@ -93,67 +112,6 @@ def decode_n_tokens(
 
 def model_forward(model, x, input_pos):
     return model(x, input_pos)
-
-
-def speculative_decode(
-    model: Transformer,
-    draft_model: Transformer,
-    cur_token: torch.Tensor,
-    input_pos: int,
-    speculate_k: int,
-    **sampling_kwargs,
-) -> torch.Tensor:
-    # draft model inference sequentially
-    device = cur_token.device
-    orig_input_pos = torch.tensor(
-        [input_pos], dtype=torch.int64, device=cur_token.device
-    )
-    draft_tokens, draft_probs = decode_n_tokens(
-        draft_model,
-        cur_token.view(1, -1),
-        orig_input_pos.clone(),
-        speculate_k,
-        **sampling_kwargs,
-    )
-
-    draft_tokens = torch.cat(draft_tokens)
-    # parallel inference on target model using draft tokens
-    target_logits = model_forward(
-        model,
-        torch.cat([cur_token.view(1), draft_tokens]).view(1, -1),
-        torch.arange(input_pos, input_pos + speculate_k + 1, device=cur_token.device),
-    )
-    target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
-    draft_probs = torch.stack(draft_probs)
-    # q: target prob, p: draft prob
-    # q >= p: always accept draft token
-    # q < p: q/p prob to accept draft token
-    p = draft_probs[torch.arange(0, speculate_k, device=device), draft_tokens]
-    q = target_probs[torch.arange(0, speculate_k, device=device), draft_tokens]
-    accept_draft_prob = torch.minimum(torch.ones(()), q[:speculate_k] / p)
-    rejected_locations = (
-        torch.rand_like(accept_draft_prob) > accept_draft_prob
-    ).nonzero()
-
-    if rejected_locations.shape[0] == 0:  # All draft tokens have been accepted
-        accept_length = speculate_k + 1
-        last_token = multinomial_sample_one_no_sync(target_probs[-1])
-        # fill last token into draft model
-        model_forward(
-            draft_model,
-            draft_tokens[-1].view(1, -1),
-            orig_input_pos + speculate_k,
-        )
-        return torch.cat([draft_tokens, last_token])
-    else:
-        accept_length = rejected_locations[0].item()
-        p = draft_probs[accept_length]
-        q = target_probs[accept_length]
-        new = q - p
-        new = torch.where(new > 0, new, 0.0)
-        new = new / new.sum()
-        next_token = multinomial_sample_one_no_sync(new)
-        return torch.cat([draft_tokens[:accept_length], next_token])
 
 
 def normalize_cache_length(
@@ -175,39 +133,12 @@ def normalize_cache_length(
     return min(find_multiple(max_cache_length, multiple_of), max_seq_length)
 
 
-@torch.no_grad()
-def generate(
+def setup_caches(
     model: Transformer,
-    prompt: torch.Tensor,
-    max_new_tokens: int,
-    *,
-    interactive: bool,
-    draft_model: Transformer,
-    speculate_k: Optional[int] = 8,
-    callback=lambda x: x,
-    terminator_ids: Optional[list] = None,
+    device: torch.device,
+    max_seq_length: int,
     cache_kwargs: dict = None,
-    **sampling_kwargs,
-) -> torch.Tensor:
-    """
-    Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
-    """
-
-    is_speculative = draft_model is not None
-    # create an empty tensor of the expected final shape and fill in the current tokens
-    T = prompt.size(0)
-    max_seq_length = min(T + max_new_tokens, model.config.block_size)
-    if interactive:
-        max_seq_length = 350
-    print(f"Maximum context length of {max_seq_length} tokens.")
-
-    max_new_tokens = max_seq_length - T
-
-    device, dtype = prompt.device, prompt.dtype
-    max_seq_length = (
-        max_seq_length + speculate_k + 1 if is_speculative else max_seq_length
-    )
-
+):
     # Normalize max_cache_length to absolute cache length if provided as a fraction of the max seq sequence length
     cache_kwargs["max_cache_length"] = list(
         map(
@@ -237,70 +168,63 @@ def generate(
 
     with torch.device(device):
         model.setup_caches(max_batch_size=1, **cache_kwargs)
-        if is_speculative and draft_model is not model:
-            draft_model.setup_caches(max_batch_size=1, **cache_kwargs)
+
+
+def reset_caches(model: Transformer):
+    model.reset_caches()
+
+
+@torch.no_grad()
+def generate(
+    model: Transformer,
+    prompt: torch.Tensor,
+    max_new_tokens: int,
+    terminator_ids: Optional[list] = None,
+    **sampling_kwargs,
+) -> torch.Tensor:
+    """
+    Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
+    """
+
+    # create an empty tensor of the expected final shape and fill in the current tokens
+    prompt_length = prompt.size(0)
+
+    device, dtype = prompt.device, prompt.dtype
 
     # create an empty tensor (all -1) of the expected final shape and fill in the current tokens
     # GPT-Fast had this as empty but the values of empty are non-deterministic
-    seq = torch.full((max_seq_length,), -1, dtype=dtype, device=device)
-    seq[:T] = prompt
-    input_pos = torch.arange(0, T, device=device)
+    seq = torch.full((prompt_length + max_new_tokens,), -1, dtype=dtype, device=device)
+    seq[:prompt_length] = prompt
+    input_pos = torch.arange(0, prompt_length, device=device)
 
     ret = prefill(model, prompt.view(1, -1), input_pos, **sampling_kwargs)
     next_token = ret[0].clone()
     next_tok_probs = ret[1].clone()
-    if is_speculative:
-        prefill(draft_model, prompt.view(1, -1), input_pos, **sampling_kwargs)
-    seq[T] = next_token
 
-    input_pos = torch.tensor([T], device=device, dtype=torch.int)
-    accept_counts = [0] * (speculate_k + 1)
+    seq[prompt_length] = next_token
 
-    if is_speculative:
-        input_pos = input_pos.item()  # for speculative decoding easier to keep on host
-        while input_pos < max_seq_length - 1:
-            cur_token = next_token.view(())
-
-            next_tokens = speculative_decode(
-                model, draft_model, cur_token, input_pos, speculate_k, **sampling_kwargs
-            )
-
-            accept_counts[len(next_tokens) - 1] += 1
-            num_added = min(max_seq_length - input_pos - 1, len(next_tokens))
-            seq[input_pos + 1 : input_pos + num_added + 1] = next_tokens[:num_added]
-            for i in next_tokens[:num_added,]:
-                callback(i)
-            input_pos = input_pos + num_added
-            next_token = next_tokens[-1]
-    else:
-        generated_tokens, generated_tok_probs = decode_n_tokens(
-            model,
-            next_token.view(1, -1),
-            input_pos,
-            max_new_tokens - 1,
-            callback=callback,
-            terminator_ids=terminator_ids,
-            **sampling_kwargs,
+    input_pos = torch.tensor([prompt_length], device=device, dtype=torch.int)
+    generated_tokens, generated_tok_probs = decode_n_tokens(
+        model,
+        next_token.view(1, -1),
+        input_pos,
+        max_new_tokens - 1,
+        terminator_ids=terminator_ids,
+        **sampling_kwargs,
+    )
+    if len(generated_tokens) > 0:
+        seq[prompt_length + 1 : prompt_length + 1 + len(generated_tokens)] = torch.cat(
+            generated_tokens
         )
-        if len(generated_tokens) > 0:
-            seq[T + 1 : T + 1 + len(generated_tokens)] = torch.cat(generated_tokens)
 
     # Truncate seq to first instance of -1 if -1 is present
     if -1 in seq:
         seq = seq[: torch.where(seq == -1)[0][0]]
 
-    generate_stats = {"accept_counts": accept_counts}
-    return seq, generate_stats, [next_tok_probs] + generated_tok_probs
+    return seq, [next_tok_probs] + generated_tok_probs
 
 
-def encode_tokens(tokenizer, string, bos=True, device=default_device):
-    tokens = tokenizer.encode(string)
-    if bos:
-        tokens = [tokenizer.bos_id()] + tokens
-    return torch.tensor(tokens, dtype=torch.int, device=device)
-
-
-def _load_model(checkpoint_path, device, precision, use_tp):
+def load_model(checkpoint_path, device, precision, use_tp):
     use_cuda = "cuda" in device
     with torch.device("meta"):
         model = Transformer.from_name(checkpoint_path.parent.name)
@@ -333,3 +257,12 @@ def _load_model(checkpoint_path, device, precision, use_tp):
 
     model = model.to(device=device, dtype=precision)
     return model.eval()
+
+
+def get_model_size(model):
+    model_size = 0
+    for name, child in model.named_children():
+        if not isinstance(child, torch.nn.Embedding):
+            for p in itertools.chain(child.parameters(), child.buffers()):
+                model_size += p.numel() * p.dtype.itemsize
+    return model_size

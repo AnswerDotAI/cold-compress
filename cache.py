@@ -148,21 +148,38 @@ class KVCache(ABC, nn.Module):
 
         # This turns True when the global tokens are fully filled
         self.global_filled = self.global_tokens == 0
+        self.always_keep_prompt = self.global_tokens = -1
 
     def reset(self):
         """
-        If needed, this will reset the cache, although it is likely not necessary for most cache types.
+        Resets the cache to its initial state for a new example.
+
+        NB: For more performance, don't reset k_cache and v_cache since we overwrite them in update.
         """
         self.k_cache.zero_()
         self.v_cache.zero_()
         self.cache_cts.zero_()
         self.pos.fill_(-1)
+        if self.always_keep_prompt:
+            self.global_tokens = (
+                -1
+            )  # -1 means we will resize it to the prompt size during prefill
+        self.global_filled = self.global_tokens == 0
 
     def return_attn(self):
         """
         Returns whether the cache requires attention weights for cache management.
         """
         return False
+
+    def compression_ratio(self, input_pos):
+        """
+        Returns the compression ratio of the cache.
+        """
+        # If current position is k, then the compression ratio is (k - curr_cache_ct)) / k
+        # Where curr_cache_ct = min(self.cache_cts, self.max_cache_length)
+        max_pos = input_pos.max() + 1
+        return ((max_pos - min(self.cache_cts, self.max_cache_length)) / max_pos).mean()
 
     def is_prefill(self):
         """
@@ -250,6 +267,7 @@ class KVCache(ABC, nn.Module):
             if self.cache_cts < self.max_cache_length
             else self.v_cache
         )
+
         return k, v, attn_history_callback
 
     @abstractmethod
@@ -539,13 +557,24 @@ class KVCacheScissorhands(KVCacheWindow):
         self.register_buffer(
             "eviction_queue", torch.zeros(eviction_queue_shape, dtype=torch.int32)
         )
-        # Start with an "empty queue"
+        # Start with an "empty queue" so that we can fill it up.
         self.register_buffer("eviction_idx", torch.tensor(self.drop_amount))
 
         assert self.recent_window >= self.attn_record_freq, (
             f"Since recent window ({self.recent_window}) < attention record frequency ({self.attn_record_freq}), you will get nan scores when "
             "deciding which tokens to evict because >0 non-local tokens will have no attention history."
         )
+        assert self.queue_len == 0
+
+    def reset(self):
+        super().reset()
+        self.attn_history_num.zero_()
+        self.attn_history_denom.zero_()
+        self.attn_counter.zero_()
+        self.eviction_queue.zero_()
+        # Start with an "empty queue" so that we can fill it up
+        self.eviction_idx.fill(self.drop_amount)
+        assert self.queue_len == 0
 
     def queue_len(self):
         return self.drop_amount - self.eviction_idx

@@ -5,6 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 import sys
 import time
+import yaml
+import contextlib
 from pathlib import Path
 from typing import Optional, List
 from collections import defaultdict
@@ -15,16 +17,9 @@ import torch._dynamo.config
 import torch._inductor.config
 
 
-from cache import add_cache_arguments, cache_compatibility
-
-
-def device_sync(device):
-    if "cuda" in device:
-        torch.cuda.synchronize(device)
-    elif ("cpu" in device) or ("mps" in device):
-        pass
-    else:
-        print(f"device={device} is not yet suppported")
+from cache import add_cache_arguments, cache_compatibility, setup_caches, reset_caches
+from generation_utils import device_sync, compute_max_seq_length
+from tokenizer import encode
 
 
 torch._inductor.config.coordinate_descent_tuning = True
@@ -38,7 +33,7 @@ wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
 from tokenizer import get_tokenizer
-from generation_utils import _load_model, generate, encode_tokens
+from generation_utils import load_model, generate
 from task import TASK_MAPPING, AutoTask
 
 
@@ -52,6 +47,7 @@ def main(
     profile: Optional[Path] = None,
     device=default_device,
     cache_kwargs: dict = {},
+    compile=True,
 ) -> None:
     """Generates text samples based on a pre-trained Transformer model and tokenizer."""
     assert checkpoint_path.is_file(), checkpoint_path
@@ -81,7 +77,7 @@ def main(
 
     print("Loading model ...")
     t0 = time.time()
-    model = _load_model(checkpoint_path, device, precision, use_tp)
+    model = load_model(checkpoint_path, device, precision, use_tp)
 
     device_sync(device=device)  # MKG
     print(f"Time to load model: {time.time() - t0:.02f} seconds")
@@ -92,6 +88,13 @@ def main(
 
     torch.manual_seed(1234)
 
+    if compile:
+        global decode_one_token, prefill
+        decode_one_token = torch.compile(
+            decode_one_token, mode="reduce-overhead", fullgraph=True
+        )
+        prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
+
     eval_tasks = {task: AutoTask.from_name(task) for task in tasks}
 
     task_metrics = defaultdict(dict)
@@ -99,23 +102,32 @@ def main(
         print(f"Evaluating task: {task}")
         aggregate_metrics = {
             "tokens_per_sec": [],
-            "accept_counts": [],
         }
         predictions = []
         all_probs = []
-        for row in tqdm(task.get_test()):
-            prompt = row["prompt"]
-            if is_chat:
-                tokens = tokenizer.encode_prompt(prompt)
-                encoded = torch.tensor(tokens, dtype=torch.int, device=device)
-            else:
-                encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
-            prompt_length = encoded.size(0)
+
+        # Make a copy of the cache kwargs for this task in case of any in-place modifications
+        task_cache_kwargs = cache_kwargs.copy()
+
+        inputs = [
+            encode(tokenizer, row["prompt"], device="cpu", is_chat=is_chat)
+            for row in tqdm(task.get_test(), desc="Encoding Prompts")
+        ]
+
+        _, max_seq_length = compute_max_seq_length(model, inputs, task.max_tokens)
+
+        print(f"Maximum context length of {max_seq_length} tokens.")
+        setup_caches(model, inputs[0].device, max_seq_length, task_cache_kwargs)
+
+        for i in tqdm(range(len(inputs))):
+            inputs[i] = inputs[i].to(device)
+            prompt_length = inputs[i].size(0)
+
+            max_new_tokens = min(task.max_tokens, max_seq_length - prompt_length)
+            assert max_new_tokens > 0, f"Prompt too long for model: {prompt_length}"
 
             device_sync(device=device)  # MKG
-            callback = lambda x: x
             t0 = time.perf_counter()
-            import contextlib
 
             if not profile or (use_tp and rank != 0):
                 prof = contextlib.nullcontext()
@@ -123,19 +135,15 @@ def main(
                 torch.profiler._utils._init_for_cuda_graphs()
                 prof = torch.profiler.profile()
             with prof:
-                y, metrics, probs = generate(
+                y, probs = generate(
                     model,
-                    encoded,
-                    max_new_tokens=task.max_tokens,
-                    callback=callback,
+                    inputs[i],
+                    max_new_tokens=max_new_tokens,
                     temperature=temperature,
                     top_k=top_k,
                     terminator_ids=terminator_ids,
                     cache_kwargs=cache_kwargs.copy(),
-                    interactive=False,
-                    draft_model=None,
                 )
-                aggregate_metrics["accept_counts"].append(metrics["accept_counts"])
             if hasattr(prof, "export_chrome_trace"):
                 if use_tp:
                     prof.export_chrome_trace(f"{profile}_rank_{rank}.json")
@@ -145,7 +153,7 @@ def main(
             t = time.perf_counter() - t0
 
             pred = tokenizer.decode(y.tolist()).split(
-                tokenizer.decode(encoded.tolist())
+                tokenizer.decode(inputs[i].tolist())
             )[1]
             predictions.append(pred)
             if task.requires_logits:
@@ -155,6 +163,9 @@ def main(
             tokens_generated = y.size(0) - prompt_length
             tokens_sec = tokens_generated / t
             aggregate_metrics["tokens_per_sec"].append(tokens_sec)
+
+            # Reset Counters for KV Cache
+            reset_caches(model)
 
         print(
             f"Average tokens/sec: {torch.mean(torch.tensor(aggregate_metrics['tokens_per_sec'])).item():.2f}"
@@ -191,12 +202,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--temperature", type=float, default=0.5, help="Temperature for sampling."
     )
-    parser.add_argument(
-        "-no_terminators",
-        default=False,
-        action="store_true",
-        help="If you want the model to generate the full max tokens. Useful for profiling memory.",
-    )
+
     parser.add_argument(
         "--checkpoint_path",
         type=Path,
@@ -211,9 +217,27 @@ if __name__ == "__main__":
         "--device", type=str, default=default_device, help="Device to use"
     )
 
+    parser.add_argument(
+        "--cache_config",
+        type=str,
+        default=None,
+        help="Name of YAML file in ./cache_configs.",
+    )
+
     add_cache_arguments(parser)
 
     args = parser.parse_args()
+
+    if args.cache_config:
+        # Get parent directory of current file
+        if not args.cache_config.endswith(".yaml"):
+            args.cache_config = args.cache_config + ".yaml"
+        yaml_fn = Path(__file__).parent / "cache_configs" / args.cache_config
+        assert yaml_fn.exists(), f"Cache config file {yaml_fn} does not exist."
+        with open(yaml_fn, "r") as f:
+            cache_args = yaml.safe_load(f)
+            # Over-write args with cache_args
+            args = argparse.Namespace(**{**vars(args), **cache_args})
 
     cache_compatibility(args)
 
