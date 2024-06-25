@@ -7,11 +7,13 @@ import itertools
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch._dynamo.config
 import torch._inductor.config
+
+from generation_utils import decode_one_token, prefill
 
 
 def device_sync(device):

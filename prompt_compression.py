@@ -68,6 +68,14 @@ class PromptCompressorSnapKV(PromptCompressor):
         self.kernel_size = 5
         self.observation_len = 16
 
+        self.pool = torch.nn.AvgPool1d(
+            self.kernel_size,
+            stride=1,
+            padding=self.kernel_size // 2,
+            ceil_mode=False,
+            count_include_pad=False,
+        )
+
     def is_compatible(self) -> bool:
         # Can only be used with head-specific KV-caches
         return self.head_specific
@@ -78,19 +86,12 @@ class PromptCompressorSnapKV(PromptCompressor):
     def __call__(self, input_pos, k_val, v_val, attn):
         assert self.head_specific, "SnapKV can only be used with head-specific KV-caches, e.g., placing the same token in different locations across heads)."
 
-        pool = torch.nn.AvgPool1d(
-            self.kernel_size,
-            stride=1,
-            padding=self.kernel_size // 2,
-            ceil_mode=False,
-            count_include_pad=False,
-        )
         priority = attn[:, :, -self.observation_len :, :].mean(dim=2)
         prev_shape = priority.shape
 
         # We'll be returning the attention history so we need to keep a copy before it's modified
         attn_history = priority.clone()
-        priority = pool(priority)
+        priority = self.pool(priority)
         assert (
             priority.shape == prev_shape
         ), f"Pooling operation should not change the dimension: {prev_shape} -> {priority.shape}"
