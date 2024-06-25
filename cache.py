@@ -3,6 +3,93 @@ from typing import Tuple, Callable
 import torch
 import torch.nn as nn
 from prompt_compression import prompt_compressor_constructor
+import argparse
+
+
+def add_cache_arguments(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group("cache_args")
+    # KV-Cache Kwargs
+    group.add_argument(
+        "--max_cache_length",
+        type=float,
+        default=[1.0],
+        nargs="+",
+        help="Cache size per layer. If len < n layers, the values are tiled. Must have len divisible by n layers. \
+        If 0 < x <= 1, it is percent of |prompt| + max new tokens. Otherwise, if > 1, its the maximum size.",
+    )
+    group.add_argument(
+        "--cache_strategy",
+        default="full",
+        choices=["full", "random", "window", "scissor", "l2"],
+    )
+
+    group.add_argument(
+        "--prompt_compression_strategy",
+        default="recent_global",
+        choices=["recent_global", "snapkv", "l2"],
+        help="If |prompt| exceeds max_cache_length, we need to specify a strategy for compressing it to max_cache_length.",
+    )
+
+    # Optional Cache Kwargs depending on cache_strategy
+    group.add_argument(
+        "--global_tokens",
+        default=4,
+        type=int,
+        help="The number of initial tokens to always include in the KV-Cache.  \
+        If using window strategy, the actual window becomes max_cache_length - global_tokens.",
+    )
+
+    # Locality
+    group.add_argument(
+        "--recent_window",  # NB: for KVCacheWindow, recent_window is implicitly set to self.max_cache_length - self.global_tokens.
+        default=10,  # 10 is default specified in ScissorHands paper ("r" in Algorithm 2).
+        type=int,
+        help="The number of recently generated tokens to always spare from eviction.",
+    )
+
+    # Scissorhands-specific Hyperparameters (--cache_strategy == "scissor")
+    ## See Algorithm 1 & 2 in arxiv.org/abs/2305.17118
+    group.add_argument(
+        "--history_window_size",  # Equivalent to "m" in Algorithm 2.
+        default=400,  # 400 is default specified in paper.
+        type=int,
+        help="The number of past tokens to consider when computing 'Heavy Hitters' in the KV-Cache.",
+    )
+    group.add_argument(
+        "--drop_amount",  # Equivalent to "m" in Algorithm 2.
+        default=0.5,  # 0.4 is default specified in paper.
+        type=float,
+        help="The number of tokens to evict KV-Cache reaches capacity (max_cache_length). Expressed as a fraction of max_cache_length.",
+    )
+    group.add_argument(
+        "-attn_thresholding",
+        default=False,
+        action="store_true",
+        help="Whether to accumulate number of times a token was unimportant (binary) versus raw un-normalized probabilities. If true, more memory efficient.",
+    )
+
+    group.add_argument(
+        "--attn_record_freq",
+        default=10,
+        type=int,
+        help="How often to record attention weights for the ScissorHands cache..",
+    )
+
+
+def cache_compatibility(args):
+    if args.cache_strategy == "full":
+        # Full implies no compression, which means --max_cache_length = [1.0] (same size as prompt + max_new_tokens)
+        assert all(
+            [l == 1.0 for l in args.max_cache_length]
+        ), "Full cache strategy only supports max_cache_length=1.0."
+
+    # Attention-based eviction policies must use an attention-based prompt compressor
+    if args.cache_strategy in {"scissor"}:
+        assert (
+            args.prompt_compression_strategy == "snapkv"
+        ), 'Scissor requires "snapkv" prompt compression strategy'
+
+    print("The cache argument values you provided appear compatible with each other!")
 
 
 class KVCache(ABC, nn.Module):
@@ -309,6 +396,7 @@ class KVCacheWindow(KVCache):
         "max_cache_length",
         "global_tokens",
         "prompt_compression_strategy",
+        # NB: "recent_window" is ignored as a relevant kwarg. It is fixed to self.max_cache_length - self.global_tokens.
     ]
 
     def __init__(
@@ -467,7 +555,7 @@ class KVCacheScissorhands(KVCacheWindow):
         Whether or not we need to return attention weights for cache management.
 
         We return attention weights if 3 conditions are met:
-        1) The cache is not in the prefill stage
+        1) The cache is not in the prefill stage.
         2) The number of tokens left in the eviction queue // the frequency with which we record attention < attention history window.
         3) The number of insertions is a multiple of the frequency with which we record attention.
 

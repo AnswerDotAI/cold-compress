@@ -13,6 +13,7 @@ import torch
 import torch._dynamo.config
 import torch._inductor.config
 
+from cache import add_cache_arguments
 from generation_utils import decode_one_token, prefill
 
 
@@ -37,6 +38,7 @@ sys.path.append(str(wd))
 
 from tokenizer import get_tokenizer
 from generation_utils import generate, encode_tokens, _load_model
+from cache import add_cache_arguments, cache_compatibility
 
 
 def _get_model_size(model):
@@ -306,70 +308,7 @@ if __name__ == "__main__":
         "--device", type=str, default=default_device, help="Device to use"
     )
 
-    # KV-Cache Kwargs
-    parser.add_argument(
-        "--max_cache_length",
-        type=float,
-        default=[1.0],
-        nargs="+",
-        help="Cache size per layer. If len < n layers, the values are tiled. Must have len divisible by n layers. \
-        If 0 < x <= 1, it is percent of |prompt| + max new tokens. Otherwise, if > 1, its the maximum size.",
-    )
-    parser.add_argument(
-        "--cache_strategy",
-        default="full",
-        choices=["full", "random", "window", "scissor", "l2"],
-    )
-
-    parser.add_argument(
-        "--prompt_compression_strategy",
-        default="recent_global",
-        choices=["recent_global", "snapkv", "l2"],
-        help="If |prompt| exceeds max_cache_length, we need to specify a strategy for compressing it to max_cache_length.",
-    )
-
-    # Optional Cache Kwargs depending on cache_strategy
-    parser.add_argument(
-        "--global_tokens",
-        default=4,
-        type=int,
-        help="The number of initial tokens to always include in the KV-Cache.  \
-        If using window strategy, the actual window becomes max_cache_length - global_tokens.",
-    )
-
-    # Scissorhands-specific Hyperparameters (--cache_strategy == "scissor")
-    ## See Algorithm 1 & 2 in arxiv.org/abs/2305.17118
-    parser.add_argument(
-        "--history_window_size",  # Equivalent to "m" in Algorithm 2.
-        default=400,  # 400 is default specified in paper.
-        type=int,
-        help="The number of past tokens to consider when computing 'Heavy Hitters' in the KV-Cache.",
-    )
-    parser.add_argument(
-        "--drop_amount",  # Equivalent to "m" in Algorithm 2.
-        default=0.5,  # 0.4 is default specified in paper.
-        type=float,
-        help="The number of tokens to evict KV-Cache reaches capacity (max_cache_length). Expressed as a fraction of max_cache_length.",
-    )
-    parser.add_argument(
-        "--recent_window",  # Equivalent to "r" in Algorithm 2.
-        default=10,  # 10 is default specified in paper.
-        type=int,
-        help="The number of recently generated tokens to always save when evicting tokens from the ScissorHands KV-Cache.",
-    )
-    parser.add_argument(
-        "-attn_thresholding",
-        default=False,
-        action="store_true",
-        help="Whether to accumulate number of times a token was unimportant (binary) versus raw un-normalized probabilities. If true, more memory efficient.",
-    )
-
-    parser.add_argument(
-        "--attn_record_freq",
-        default=10,
-        type=int,
-        help="How often to record attention weights for the ScissorHands cache. Higher .",
-    )
+    add_cache_arguments(parser)
 
     args = parser.parse_args()
 
@@ -378,29 +317,7 @@ if __name__ == "__main__":
         with open(prompt_fn) as fd:
             args.prompt = fd.read().strip()
 
-    if args.cache_strategy == "full":
-        # Full implies no compression, which means --max_cache_length = [1.0] (same size as prompt + max_new_tokens)
-        assert all(
-            [l == 1.0 for l in args.max_cache_length]
-        ), "Full cache strategy only supports max_cache_length=1.0."
-
-    # Attention-based eviction policies must use an attention-based prompt compressor
-    if args.cache_strategy in {"scissor"}:
-        assert (
-            args.prompt_compression_strategy == "snapkv"
-        ), 'Scissor requires "snapkv" prompt compression strategy'
-
-    cache_kwargs = {
-        "cache_strategy": args.cache_strategy,
-        "max_cache_length": args.max_cache_length,
-        "global_tokens": args.global_tokens,
-        "history_window_size": args.history_window_size,
-        "drop_amount": args.drop_amount,
-        "recent_window": args.recent_window,
-        "attn_thresholding": args.attn_thresholding,
-        "prompt_compression_strategy": args.prompt_compression_strategy,
-        "attn_record_freq": args.attn_record_freq,
-    }
+    cache_compatibility(args)
 
     main(
         args.prompt,
@@ -416,5 +333,5 @@ if __name__ == "__main__":
         args.draft_checkpoint_path,
         args.speculate_k,
         args.device,
-        cache_kwargs,
+        cache_kwargs=vars(args),
     )
