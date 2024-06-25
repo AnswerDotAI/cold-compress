@@ -204,7 +204,10 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--debug", default=False, action="store_true", help="Debug mode uses first 10 examples in dataset."
+        "--debug",
+        default=False,
+        action="store_true",
+        help="Debug mode uses first 10 examples in dataset.",
     )
 
     parser.add_argument(
