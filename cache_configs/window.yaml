@@ -1,0 +1,3 @@
+cache_strategy: "window"
+global_tokens: 4
+max_cache_length: [0.5]

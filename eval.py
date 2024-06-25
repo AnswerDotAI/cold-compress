@@ -17,8 +17,15 @@ import torch._dynamo.config
 import torch._inductor.config
 
 
-from cache import add_cache_arguments, cache_compatibility, setup_caches, reset_caches
-from generation_utils import device_sync, compute_max_seq_length
+from cache import add_cache_arguments, cache_compatibility
+from generation_utils import (
+    compute_max_seq_length,
+    decode_one_token,
+    device_sync,
+    prefill,
+    reset_caches,
+    setup_caches,
+)
 from tokenizer import encode
 
 
@@ -39,15 +46,13 @@ from task import TASK_MAPPING, AutoTask
 
 def main(
     tasks: List[str],
-    top_k: int = 200,
-    temperature: float = 0.8,
     checkpoint_path: Path = Path(
         "checkpoints/meta-Transformer/Transformer-2-7b-chat-hf/model.pth"
     ),
     profile: Optional[Path] = None,
+    compile=True,
     device=default_device,
     cache_kwargs: dict = {},
-    compile=True,
 ) -> None:
     """Generates text samples based on a pre-trained Transformer model and tokenizer."""
     assert checkpoint_path.is_file(), checkpoint_path
@@ -113,9 +118,6 @@ def main(
         predictions = []
         all_probs = []
 
-        # Make a copy of the cache kwargs for this task in case of any in-place modifications
-        task_cache_kwargs = cache_kwargs.copy()
-
         inputs = [
             encode(tokenizer, row["prompt"], device="cpu", is_chat=is_chat)
             for row in tqdm(task.get_test(), desc="Encoding Prompts")
@@ -123,14 +125,11 @@ def main(
 
         _, max_seq_length = compute_max_seq_length(model, inputs, task.max_tokens)
 
-        print(f"Maximum context length of {max_seq_length} tokens.")
-        setup_caches(
-            model, tokenizer, inputs[0].device, max_seq_length, task_cache_kwargs
-        )
+        setup_caches(model, tokenizer, device, max_seq_length, cache_kwargs.copy())
 
         for i in tqdm(range(len(inputs))):
-            inputs[i] = inputs[i].to(device)
-            prompt_length = inputs[i].size(0)
+            input = inputs[i].to(device)
+            prompt_length = input.size(0)
 
             max_new_tokens = min(task.max_tokens, max_seq_length - prompt_length)
             assert max_new_tokens > 0, f"Prompt too long for model: {prompt_length}"
@@ -146,12 +145,9 @@ def main(
             with prof:
                 y, probs = generate(
                     model,
-                    inputs[i],
+                    input,
                     max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    top_k=top_k,
                     terminator_ids=terminator_ids,
-                    cache_kwargs=cache_kwargs.copy(),
                 )
             if hasattr(prof, "export_chrome_trace"):
                 if use_tp:
@@ -206,12 +202,6 @@ if __name__ == "__main__":
         help="List of tasks to be evaluated.",
     )
 
-    parser.add_argument("--top_k", type=int, default=200, help="Top-k for sampling.")
-
-    parser.add_argument(
-        "--temperature", type=float, default=0.5, help="Temperature for sampling."
-    )
-
     parser.add_argument(
         "--checkpoint_path",
         type=Path,
@@ -221,6 +211,10 @@ if __name__ == "__main__":
     )
 
     parser.add_argument("--profile", type=Path, default=None, help="Profile path.")
+
+    parser.add_argument(
+        "--compile", action="store_true", help="Whether to compile the model."
+    )
 
     parser.add_argument(
         "--device", type=str, default=default_device, help="Device to use"
@@ -250,12 +244,14 @@ if __name__ == "__main__":
 
     cache_compatibility(args)
 
+    for k, v in vars(args).items():
+        print(f"{k} -> {v}")
+
     main(
         args.tasks,
-        args.top_k,
-        args.temperature,
         args.checkpoint_path,
         args.profile,
+        args.compile,
         args.device,
         cache_kwargs=vars(args),
     )

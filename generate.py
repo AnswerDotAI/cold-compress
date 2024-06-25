@@ -15,10 +15,10 @@ import torch._inductor.config
 
 from cache import add_cache_arguments
 from generation_utils import (
-    decode_one_token,
-    prefill,
-    device_sync,
     compute_max_seq_length,
+    decode_one_token,
+    device_sync,
+    prefill,
 )
 from tokenizer import encode
 

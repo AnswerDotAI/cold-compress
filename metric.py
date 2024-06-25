@@ -18,7 +18,7 @@ class Rouge(Metric):
         super().__init__(**kwargs)
 
     def _load_metric(self, **kwargs):
-        self.metric = load("rouge")
+        self.metric = load("rouge", keep_in_memory=True)
 
     def compute(self, predictions, references):
         return self.metric.compute(predictions=predictions, references=references)
@@ -29,7 +29,7 @@ class Bleurt(Metric):
         super().__init__(**kwargs)
 
     def _load_metric(self, **kwargs):
-        self.metric = load("bleurt")
+        self.metric = load("bleurt", keep_in_memory=True)
 
     def compute(self, predictions, references):
         return np.mean(
@@ -44,7 +44,7 @@ class BertScore(Metric):
         super().__init__(**kwargs)
 
     def _load_metric(self, **kwargs):
-        self.metric = load("bertscore")
+        self.metric = load("bertscore", keep_in_memory=True)
 
     def compute(self, predictions, references):
         result = self.metric.compute(
