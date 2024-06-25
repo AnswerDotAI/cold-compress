@@ -175,7 +175,7 @@ class KVCache(ABC, nn.Module):
         # This turns True when the global tokens are fully filled
         self.global_filled = self.global_tokens == 0
         self.always_keep_prompt = self.global_tokens = -1
-        
+
         # KVCacheFastGen requires profiling attention heads during prefill. This must be handled with separate callback.
         self.prefill_attn_callback = None
 
