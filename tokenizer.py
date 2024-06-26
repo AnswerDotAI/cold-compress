@@ -59,12 +59,8 @@ class TokenizerInterface(ABC):
     def __len__(self):
         pass
 
-    @abstractmethod
-    def all_wps(self):
-        pass
-
     def punctuation_ids(self):
-        return [i for i, wp in enumerate(self.all_wps()) if is_punc_id(wp)]
+        return [i for i, wp in enumerate(self.vocab) if is_punc_id(wp)]
 
     def get_vocab(self):
         assert (
@@ -121,9 +117,6 @@ class SentencePieceWrapper(TokenizerInterface):
 
     def get_terminator_ids(self):
         return self.terminator_ids
-
-    def all_wps(self):
-        return [self.processor.id_to_piece(id) for id in range(len(self))]
 
     def __len__(self):
         return self.processor.get_piece_size()
@@ -193,14 +186,6 @@ class TiktokenWrapper(TokenizerInterface):
 
     def get_terminator_ids(self):
         return self.terminator_ids
-
-    def all_wps(self):
-        return [
-            self.model.decode_single_token_bytes(vocab_id).decode(
-                "utf-8", errors="replace"
-            )
-            for vocab_id in range(len(self))
-        ]
 
     def __len__(self):
         return self.model.n_vocab
