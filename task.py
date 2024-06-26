@@ -84,11 +84,13 @@ class EvaluationTask(ABC):
         assert (
             len(dataset) == len(predictions)
         ), f"Number of predictions and labels must match ({len(predictions)} != {len(dataset)})."
-        return self._compute_metrics(predictions, dataset["labels"])
+        return self._compute_metrics(dataset["prompt"], predictions, dataset["labels"])
 
-    def _compute_metrics(self, predictions: list, labels: list[str | list[str]]):
+    def _compute_metrics(
+        self, prompts: list, predictions: list, labels: list[str | list[str]]
+    ):
         return {
-            metric_name: metric.compute(predictions, labels)
+            metric_name: metric.compute(prompts, predictions, labels)
             for metric_name, metric in self.metrics.items()
         }
 
@@ -160,6 +162,8 @@ class Squality(EvaluationTask):
         self.metrics = {
             "BertScore": AutoMetric.from_name("bertscore"),
             "Rouge": AutoMetric.from_name("rouge"),
+            "LLM-Rouge": AutoMetric.from_name("llm-rouge"),
+            "LLM-Judge": AutoMetric.from_name("llm-as-a-judge"),
         }
 
     def prepare_row(self, row: dict):
@@ -272,6 +276,8 @@ IMPORTANT:
         self.metrics = {
             "BertScore": AutoMetric.from_name("bertscore"),
             "Rouge": AutoMetric.from_name("rouge"),
+            "LLM-Rouge": AutoMetric.from_name("llm-rouge"),
+            "LLM-Judge": AutoMetric.from_name("llm-as-a-judge"),
         }
 
     def prepare_row(self, row: dict):
@@ -320,6 +326,8 @@ class QMSum(EvaluationTask):
         self.metrics = {
             "BertScore": AutoMetric.from_name("bertscore"),
             "Rouge": AutoMetric.from_name("rouge"),
+            "LLM-Rouge": AutoMetric.from_name("llm-rouge"),
+            "LLM-Judge": AutoMetric.from_name("llm-as-a-judge"),
         }
 
     def prepare_row(self, row: dict):
@@ -361,6 +369,8 @@ IMPORTANT: You should only use the infomation provided in the paragraphs to answ
         self.metrics = {
             "BertScore": AutoMetric.from_name("bertscore"),
             "Rouge": AutoMetric.from_name("rouge"),
+            "LLM-Rouge": AutoMetric.from_name("llm-rouge"),
+            "LLM-Judge": AutoMetric.from_name("llm-as-a-judge"),
         }
 
     def prepare_row(self, row: dict):
