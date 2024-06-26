@@ -7,7 +7,6 @@ import sys
 import time
 import yaml
 import contextlib
-import pandas as pd
 from pathlib import Path
 from typing import Optional, List
 from collections import defaultdict
@@ -115,12 +114,9 @@ def main(
     task_metrics = defaultdict(dict)
     for task_name, task in eval_tasks.items():
         print(f"Evaluating task: {task}")
-        aggregate_metrics = {
-            "tokens_per_sec": [],
-        }
+        aggregate_metrics = defaultdict(list)
         predictions = []
         all_probs = []
-        stats = []
 
         inputs = [
             encode(tokenizer, row["prompt"], device="cpu", is_chat=is_chat)
@@ -164,9 +160,12 @@ def main(
             tokens_generated = y.size(0) - prompt_length
             tokens_sec = tokens_generated / t
             aggregate_metrics["tokens_per_sec"].append(tokens_sec)
+            aggregate_metrics["num_toks"].append(tokens_generated)
 
             # Reset Counters for KV Cache
-            row_stats = get_cache_stats(model, prompt_length, tokens_generated)
+            cache_stats = get_cache_stats(model, prompt_length, tokens_generated)
+            for k, v in cache_stats.items():
+                aggregate_metrics[k].append(v)
 
             # Decode: remove EoT and prompt
             prompt = tokenizer.decode(inputs[i].tolist())
@@ -185,24 +184,33 @@ def main(
                     {k: v for k, v in zip(tokenizer.get_vocab(), probs[0].tolist())}
                 )
 
-            row_stats["num_toks"] = tokens_generated
-            stats.append(row_stats)
             reset_caches(model)
 
         print(
             f"Average tokens/sec: {torch.mean(torch.tensor(aggregate_metrics['tokens_per_sec'])).item():.2f}"
         )
-        print(f"Memory used: {torch.cuda.max_memory_reserved() / 1e9:.02f} GB")
-        task_metrics[task_name]["tokens_per_sec"] = torch.mean(
-            torch.tensor(aggregate_metrics["tokens_per_sec"])
-        ).item()
+        max_mem_gb = torch.cuda.max_memory_reserved() / 1e9
+        print(f"Memory used: {max_mem_gb} GB")
+        task_metrics[task_name]["max_memory_gb"] = max_mem_gb
+
+        for k, v in aggregate_metrics.items():
+            task_metrics[task_name][k] = sum(v) / len(v)
+
         if task.requires_logits:
-            task_metrics[task_name]["task_metrics"] = task.test_metrics(all_probs)
+            metrics = task.test_metrics(all_probs)
         else:
-            task_metrics[task_name]["task_metrics"] = task.test_metrics(predictions)
-        print(task_metrics[task_name]["task_metrics"])
-        stats = pd.DataFrame(stats)
-        print(stats.mean())
+            metrics = task.test_metrics(predictions)
+
+        for k, v in metrics.items():
+            if type(v) == dict:
+                for kk, vv in v.items():
+                    task_metrics[task_name][f"{k}_{kk}"] = vv
+            else:
+                task_metrics[task_name][k] = v
+
+        print(task_metrics[task_name])
+
+    print(task_metrics)
 
 
 if __name__ == "__main__":
