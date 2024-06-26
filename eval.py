@@ -161,9 +161,19 @@ def main(
             device_sync(device=device)  # MKG
             t = time.perf_counter() - t0
 
-            prompt = tokenizer.decode(inputs[i].tolist())
+            tokens_generated = y.size(0) - prompt_length
+            tokens_sec = tokens_generated / t
+            aggregate_metrics["tokens_per_sec"].append(tokens_sec)
 
-            pred = tokenizer.decode(y.tolist()).split(prompt)[1]
+            # Reset Counters for KV Cache
+            row_stats = get_cache_stats(model, prompt_length, tokens_generated)
+
+            # Decode: remove EoT and prompt
+            prompt = tokenizer.decode(inputs[i].tolist())
+            end = y.size(0)
+            if y[-1] in terminator_ids:
+                end = -1
+            pred = tokenizer.decode(y[:end].tolist()).split(prompt)[1]
 
             if args.debug:
                 print(f"Prompt: {prompt}")
@@ -174,15 +184,8 @@ def main(
                 all_probs.append(
                     {k: v for k, v in zip(tokenizer.get_vocab(), probs[0].tolist())}
                 )
-            tokens_generated = y.size(0) - prompt_length
-            tokens_sec = tokens_generated / t
-            aggregate_metrics["tokens_per_sec"].append(tokens_sec)
 
-            # Reset Counters for KV Cache
-            num_toks = y.size(0)
-            num_new_toks = num_toks - prompt_length
-            row_stats = get_cache_stats(model, prompt_length, num_new_toks)
-            row_stats["num_toks"] = num_toks
+            row_stats["num_toks"] = tokens_generated
             stats.append(row_stats)
             reset_caches(model)
 

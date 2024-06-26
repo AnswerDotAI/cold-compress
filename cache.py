@@ -174,7 +174,7 @@ class KVCache(ABC, nn.Module):
 
         # This turns True when the global tokens are fully filled
         self.global_filled = self.global_tokens == 0
-        self.always_keep_prompt = self.global_tokens = -1
+        self.always_keep_prompt = self.global_tokens == -1
 
         # KVCacheFastGen requires profiling attention heads during prefill. This must be handled with separate callback.
         self.prefill_attn_callback = None
@@ -201,14 +201,13 @@ class KVCache(ABC, nn.Module):
         """
         return False
 
-    def compression_ratio(self, input_pos):
+    def compression_ratio(self, seq_len):
         """
         Returns the compression ratio of the cache.
         """
-        # If current position is k, then the compression ratio is (k - curr_cache_ct)) / k
-        # Where curr_cache_ct = min(self.cache_cts, self.max_cache_length)
-        max_pos = input_pos.max() + 1
-        return ((max_pos - min(self.cache_cts, self.max_cache_length)) / max_pos).mean()
+        # Final token isn't passed to cache so must -1 from seq_len
+        n = seq_len - 1
+        return ((n - min(self.cache_cts, self.max_cache_length)) / n).mean()
 
     def return_kv_cache(self):
         # Truncate the cache based on number of insertions. It will be at the end since we prefill in-order.
@@ -428,6 +427,7 @@ class KVCacheFull(KVCache):
     ):
         # Never any prompt compression for full cache
         self.prompt_compression_strategy = None
+        self.global_tokens = 0  # No global tokens for full cache (they are all global)
         super().__init__(
             max_batch_size, n_heads, head_dim, dtype, head_specific=False, **kwargs
         )

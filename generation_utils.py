@@ -100,12 +100,13 @@ def decode_n_tokens(
                 model, cur_token, input_pos, **sampling_kwargs
             )
 
+            new_tokens.append(next_token.clone())
+            new_probs.append(next_prob.clone())
+
             if terminator_ids and next_token in terminator_ids:
                 break
 
             input_pos += 1
-            new_tokens.append(next_token.clone())
-            new_probs.append(next_prob.clone())
             cur_token = next_token.view(1, -1)
 
     return new_tokens, new_probs

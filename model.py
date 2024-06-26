@@ -199,11 +199,11 @@ class Transformer(nn.Module):
 
     def get_cache_stats(self, prompt_len, gen_len):
         stats = {}
-        final_pos = prompt_len + gen_len - 1
+        final_seq_len = prompt_len + gen_len
         for layer_idx, layer in enumerate(self.layers):
             stats[f"compression_ratio_{layer_idx}"] = (
                 layer.attention.kv_cache.compression_ratio(
-                    input_pos=torch.tensor(final_pos)
+                    seq_len=torch.tensor(final_seq_len)
                 ).item()
             )
         return stats
