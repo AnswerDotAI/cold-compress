@@ -107,7 +107,7 @@ def main(
         )
         prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
 
-    task_kwargs = {"debug": args.debug}
+    task_kwargs = {"model_max_length": model.config.max_length, "debug": args.debug}
     eval_tasks = {task: AutoTask.from_name(task, **task_kwargs) for task in tasks}
 
     task_metrics = defaultdict(dict)

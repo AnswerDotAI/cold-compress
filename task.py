@@ -14,9 +14,12 @@ class EvaluationTask(ABC):
     mandatory_cols = ["context", "question", "prompt", "labels"]
     requires_logits = False
 
-    def __init__(self, prompt_template, max_tokens, hf_args=None, **kwargs):
+    def __init__(
+        self, prompt_template, max_tokens, model_max_length, hf_args=None, **kwargs
+    ):
         self.prompt_template = prompt_template
         self.max_tokens = max_tokens
+        self.model_max_length = model_max_length
         self.hf_args = hf_args
         self.debug = kwargs.pop("debug", False)
 
@@ -46,10 +49,20 @@ class EvaluationTask(ABC):
                 n = min(10, len(split_data))
                 print(f"Taking first {n} examples")
                 split_data = split_data.select(range(n))
-            self.dataset[split] = split_data.map(
+            data = split_data.map(
                 self.prepare_batch, batched=True, remove_columns=remove_cols
             )
+            # Filter out examples that are too long for the model
+            filtered_data = data.filter(
+                lambda x: len(x["prompt"].split()) < self.model_max_length
+            )
+            print(
+                f"Filtered {len(data) - len(filtered_data)} examples from split {split}"
+            )
+            self.dataset[split] = filtered_data
+
         self.is_ready[split] = True
+
         return self.dataset[split]
 
     def get_train(self):
@@ -167,10 +180,10 @@ class Squality(EvaluationTask):
 class TriviaQA(EvaluationTask):
     DEFAULT_PROMPT_TEMPLATE = """You are given a question and potentially relevant context from Wikipedia. Answer the question without any explanation.
 
-Context:
+====CONTEXT====
 {context}
 
-Question:
+====QUESTION====
 {question}"""
 
     def __init__(
@@ -366,10 +379,10 @@ class TruthfulQA(LogitEvaluationTask):
     DEFAULT_PROMPT_TEMPLATE = """You will be shown a question along with several possible answers. Please carefully read the question and the answer choices and pick the best answer.
 IMPORTANT: You should simply provide the letter corresponding to the answer choice that you picked. You do not need to write out the entire answer or provide any explanation.
 
-Question:
+====QUESTION====
 {question}
 
-Answer choices:
+====ANSWER CHOICES====
 {choices}"""
 
     def __init__(self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1, **kwargs):
@@ -427,17 +440,14 @@ class ScrollsQuality(LogitEvaluationTask):
     DEFAULT_PROMPT_TEMPLATE = """You will be given a context, a question related to that context, and four possible answer choices. Carefully read the context, question, and answer choices, then select the best answer.
 IMPORTANT: Provide only the letter corresponding to your chosen answer. Do not write out the full answer or give any explanation.
 
-Context:
+====CONTEXT====
 {context}
 
-Question:
+====QUESTION====
 {question}
 
-Answer choices:
-{choices}
-
-Answer:
-"""
+====ANSWER CHOICES====
+{choices}"""
 
     def __init__(
         self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=128, **kwargs
