@@ -25,8 +25,15 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         choices=["full", "random", "window", "scissor", "l2"],
     )
 
+    # Dealing with Long Prompts
+    parser.add_argument(
+        "--feed_long_prompts",
+        default=False,
+        action="store_true",
+        help="If True and |prompt| > max_cache_length, prefill with prompt[:max_cache_length], and feed prompt[max_cache_length:] sequentially.",
+    )
     group.add_argument(
-        "--prompt_compression_strategy",
+        "--prompt_compression_strategy",  # This doesn't matter if args.feed_long_prompts is True
         default="recent_global",
         choices=["recent_global", "snapkv", "l2"],
         help="If |prompt| exceeds max_cache_length, we need to specify a strategy for compressing it to max_cache_length.",
@@ -35,7 +42,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
     # Optional Cache Kwargs depending on cache_strategy
     group.add_argument(
         "--global_tokens",
-        default=4,
+        default=0,
         type=int,
         help="The number of initial tokens to always include in the KV-Cache.  \
         If using window strategy, the actual window becomes max_cache_length - global_tokens.",
@@ -59,7 +66,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
     )
     group.add_argument(
         "--drop_amount",  # Equivalent to "m" in Algorithm 2.
-        default=0.4,  # 0.4 is default specified in paper.
+        default=0.0,  # 0 means we re-calculate eviction token every time. 0.4 is default specified in paper.
         type=float,
         help="The number of tokens to evict KV-Cache reaches capacity (max_cache_length). Expressed as a fraction of max_cache_length.",
     )
@@ -668,7 +675,10 @@ class KVCacheScissorhands(KVCacheWindow):
         return (
             not self.is_prefill()
             and self.queue_len() // self.attn_record_freq <= self.history_window_size
-            and self.cache_cts.squeeze() % self.attn_record_freq == 0
+            and (
+                self.cache_cts.squeeze() % self.attn_record_freq == 0
+                or self.attn_counter == 0
+            )
         )
 
     def update_attn_history(self, attn: torch.Tensor):

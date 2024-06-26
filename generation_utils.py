@@ -1,17 +1,39 @@
 import itertools
-import sys
-import time
 from typing import Optional, Tuple
+from pathlib import Path
 
 import torch
 import torch._dynamo.config
 import torch._inductor.config
 
+import argparse
 from model import Transformer, find_multiple
 from tokenizer import TokenizerInterface
 
 
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def add_generation_arguments(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group("generation_args")
+    # Generation hparams
+    group.add_argument(
+        "--checkpoint_path",
+        type=Path,
+        default=Path(__file__).resolve().parent
+        / "checkpoints/Qwen/Qwen2-1.5B-Instruct/model.pth",
+        help="Model checkpoint path.",
+    )
+
+    group.add_argument("--profile", type=Path, default=None, help="Profile path.")
+
+    group.add_argument(
+        "--compile", action="store_true", help="Whether to compile the model."
+    )
+
+    group.add_argument(
+        "--device", type=str, default=default_device, help="Device to use"
+    )
 
 
 def compute_max_seq_length(model, prompt_lens, max_new_tokens) -> int:
@@ -54,14 +76,35 @@ def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = Non
     return probs
 
 
-def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
+def sample(
+    logits: torch.Tensor,
+    next_token: torch.Tensor = None,
+    temperature: float = 1.0,
+    top_k: Optional[int] = None,
+):
     probs = logits_to_probs(logits[0, -1], temperature, top_k)
-    idx_next = multinomial_sample_one_no_sync(probs)
+    if next_token is None:
+        idx_next = multinomial_sample_one_no_sync(probs)
+    else:
+        idx_next = next_token
+    return idx_next, probs
+
+
+def greedy(logits, next_token):
+    probs = torch.nn.functional.softmax(logits[0, -1], dim=-1)
+    if next_token is None:
+        idx_next = torch.argmax(probs, keepdim=True).to(dtype=torch.int)
+    else:
+        idx_next = next_token
     return idx_next, probs
 
 
 def prefill(
-    model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs
+    model: Transformer,
+    x: torch.Tensor,
+    input_pos: torch.Tensor,
+    next_token: torch.Tensor = None,
+    **sampling_kwargs,
 ) -> torch.Tensor:
     # input_pos: [B, S]
     causal_mask = (
@@ -71,16 +114,20 @@ def prefill(
         .to(x.device)
     )
     logits = model(x, input_pos, mask=causal_mask)
-    return sample(logits, **sampling_kwargs)
+    return greedy(logits, next_token)
 
 
 def decode_one_token(
-    model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs
+    model: Transformer,
+    x: torch.Tensor,
+    input_pos: torch.Tensor,
+    next_token: torch.Tensor = None,
+    **sampling_kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     # input_pos: [B, 1]
     assert input_pos.shape[-1] == 1
     logits = model(x, input_pos)
-    return sample(logits, **sampling_kwargs)
+    return greedy(logits, next_token=next_token)
 
 
 def decode_n_tokens(
@@ -89,6 +136,7 @@ def decode_n_tokens(
     input_pos: torch.Tensor,
     num_new_tokens: int,
     terminator_ids: Optional[list] = None,
+    prefix: Optional[torch.Tensor] = None,
     **sampling_kwargs,
 ):
     new_tokens, new_probs = [], []
@@ -96,14 +144,16 @@ def decode_n_tokens(
         with torch.backends.cuda.sdp_kernel(
             enable_flash=False, enable_mem_efficient=False, enable_math=True
         ):  # Actually better for Inductor to codegen attention here
+            teacher_force = prefix is not None and i < len(prefix)
+            next_token = prefix[i].view(1) if teacher_force else None
             next_token, next_prob = decode_one_token(
-                model, cur_token, input_pos, **sampling_kwargs
+                model, cur_token, input_pos, next_token=next_token, **sampling_kwargs
             )
 
             new_tokens.append(next_token.clone())
             new_probs.append(next_prob.clone())
 
-            if terminator_ids and next_token in terminator_ids:
+            if terminator_ids and next_token in terminator_ids and not teacher_force:
                 break
 
             input_pos += 1
@@ -194,6 +244,7 @@ def generate(
     prompt: torch.Tensor,
     max_new_tokens: int,
     terminator_ids: Optional[list] = None,
+    feed_long_prompts: bool = False,
     **sampling_kwargs,
 ) -> torch.Tensor:
     """
@@ -205,16 +256,35 @@ def generate(
 
     device, dtype = prompt.device, prompt.dtype
 
+    min_cache_length = model.min_cache_length()
+    # Subtract 1 in case we need one generation step over which to compute attention, etc.
+    max_prompt_len = min_cache_length - 1
+    prefix = None
+    # If we asked to have prompt truncated and fed, we need to do split prompt into prompt and prefix
+    # We also define a rare yet important edge case: if |prompt| is exactly cache length
+    # We might have to start evictions before having had a change to record any state (attentions).
+    # In this scenario let's decrement prompt by 1 and start "generating" on the prefix
+    if (
+        feed_long_prompts and prompt_length > max_prompt_len
+    ) or prompt_length == min_cache_length:
+        prompt, prefix = prompt[:max_prompt_len], prompt[max_prompt_len:]
+        max_new_tokens += len(prefix)
+        prompt_length = max_prompt_len
     # create an empty tensor (all -1) of the expected final shape and fill in the current tokens
     # GPT-Fast had this as empty but the values of empty are non-deterministic
     seq = torch.full((prompt_length + max_new_tokens,), -1, dtype=dtype, device=device)
     seq[:prompt_length] = prompt
     input_pos = torch.arange(0, prompt_length, device=device)
 
-    ret = prefill(model, prompt.view(1, -1), input_pos, **sampling_kwargs)
+    ret = prefill(
+        model,
+        prompt.view(1, -1),
+        input_pos,
+        next_token=None if prefix is None else prefix[0].view(1),
+        **sampling_kwargs,
+    )
     next_token = ret[0].clone()
     next_tok_probs = ret[1].clone()
-
     seq[prompt_length] = next_token
 
     input_pos = torch.tensor([prompt_length], device=device, dtype=torch.int)
@@ -224,6 +294,7 @@ def generate(
         input_pos,
         max_new_tokens - 1,
         terminator_ids=terminator_ids,
+        prefix=None if prefix is None else prefix[1:],
         **sampling_kwargs,
     )
     if len(generated_tokens) > 0:

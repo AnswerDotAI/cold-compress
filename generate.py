@@ -15,6 +15,7 @@ import torch._inductor.config
 
 from cache import add_cache_arguments
 from generation_utils import (
+    add_generation_arguments,
     compute_max_seq_length,
     decode_one_token,
     device_sync,
@@ -40,12 +41,11 @@ from cache import add_cache_arguments, cache_compatibility
 def main(
     prompt: str = "Hello, my name is",
     max_new_tokens: int = 100,
-    top_k: int = 200,
-    temperature: float = 0.8,
     checkpoint_path: Path = Path(
         "checkpoints/meta-Transformer/Transformer-2-7b-chat-hf/model.pth"
     ),
     compile: bool = True,
+    feed_long_prompts: bool = False,
     profile: Optional[Path] = None,
     device=default_device,
     cache_kwargs: dict = {},
@@ -124,9 +124,8 @@ def main(
             model,
             inputs[0],
             max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_k=top_k,
             terminator_ids=terminator_ids,
+            feed_long_prompts=feed_long_prompts,
         )
     print(f"Compilation time: {time.perf_counter() - t0:.2f} seconds")
     if hasattr(prof, "export_chrome_trace"):
@@ -158,7 +157,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Run Simple Single Prompt Generation (for development and debugging purposes)."
     )
-
     parser.add_argument(
         "--prompt",
         type=str,
@@ -168,25 +166,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_new_tokens", type=int, default=512, help="Maximum number of new tokens."
     )
-    parser.add_argument("--top_k", type=int, default=200, help="Top-k for sampling.")
-    parser.add_argument(
-        "--temperature", type=float, default=0.8, help="Temperature for sampling."
-    )
-    parser.add_argument(
-        "--checkpoint_path",
-        type=Path,
-        default=Path(__file__).resolve().parent
-        / "checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth",
-        help="Model checkpoint path.",
-    )
-    parser.add_argument(
-        "--compile", action="store_true", help="Whether to compile the model."
-    )
-    parser.add_argument("--profile", type=Path, default=None, help="Profile path.")
-    parser.add_argument(
-        "--device", type=str, default=default_device, help="Device to use"
-    )
 
+    add_generation_arguments(parser)
     add_cache_arguments(parser)
 
     args = parser.parse_args()
@@ -201,10 +182,9 @@ if __name__ == "__main__":
     main(
         args.prompt,
         args.max_new_tokens,
-        args.top_k,
-        args.temperature,
         args.checkpoint_path,
         args.compile,
+        args.feed_long_prompts,
         args.profile,
         args.device,
         cache_kwargs=vars(args),

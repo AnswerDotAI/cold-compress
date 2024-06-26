@@ -213,6 +213,9 @@ class Transformer(nn.Module):
             )
         return stats
 
+    def min_cache_length(self):
+        return min([layer.attention.kv_cache.max_cache_length for layer in self.layers])
+
     def forward(
         self,
         idx: Tensor,
