@@ -302,7 +302,7 @@ class QMSum(EvaluationTask):
 ====MEETING TRANSCRIPT====
 {transcript}
 
-====Query====
+====QUERY====
 {query}"""
 
     def __init__(

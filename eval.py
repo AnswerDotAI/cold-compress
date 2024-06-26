@@ -22,6 +22,7 @@ from generation_utils import (
     compute_max_seq_length,
     decode_one_token,
     device_sync,
+    get_cache_stats,
     prefill,
     reset_caches,
     setup_caches,
@@ -113,9 +114,7 @@ def main(
     task_metrics = defaultdict(dict)
     for task_name, task in eval_tasks.items():
         print(f"Evaluating task: {task}")
-        aggregate_metrics = {
-            "tokens_per_sec": [],
-        }
+        aggregate_metrics = defaultdict(list)
         predictions = []
         all_probs = []
 
@@ -158,33 +157,60 @@ def main(
             device_sync(device=device)  # MKG
             t = time.perf_counter() - t0
 
-            pred = tokenizer.decode(y.tolist()).split(
-                tokenizer.decode(inputs[i].tolist())
-            )[1]
+            tokens_generated = y.size(0) - prompt_length
+            tokens_sec = tokens_generated / t
+            aggregate_metrics["tokens_per_sec"].append(tokens_sec)
+            aggregate_metrics["num_toks"].append(tokens_generated)
+
+            # Reset Counters for KV Cache
+            cache_stats = get_cache_stats(model, prompt_length, tokens_generated)
+            for k, v in cache_stats.items():
+                aggregate_metrics[k].append(v)
+
+            # Decode: remove EoT and prompt
+            prompt = tokenizer.decode(inputs[i].tolist())
+            end = y.size(0)
+            if y[-1] in terminator_ids:
+                end = -1
+            pred = tokenizer.decode(y[:end].tolist()).split(prompt)[1]
+
+            if args.debug:
+                print(f"Prompt: {prompt}")
+                print(f"Prediction: {pred}")
+
             predictions.append(pred)
             if task.requires_logits:
                 all_probs.append(
                     {k: v for k, v in zip(tokenizer.get_vocab(), probs[0].tolist())}
                 )
-            tokens_generated = y.size(0) - prompt_length
-            tokens_sec = tokens_generated / t
-            aggregate_metrics["tokens_per_sec"].append(tokens_sec)
 
-            # Reset Counters for KV Cache
             reset_caches(model)
 
         print(
             f"Average tokens/sec: {torch.mean(torch.tensor(aggregate_metrics['tokens_per_sec'])).item():.2f}"
         )
-        print(f"Memory used: {torch.cuda.max_memory_reserved() / 1e9:.02f} GB")
-        task_metrics[task_name]["tokens_per_sec"] = torch.mean(
-            torch.tensor(aggregate_metrics["tokens_per_sec"])
-        ).item()
+        max_mem_gb = torch.cuda.max_memory_reserved() / 1e9
+        print(f"Memory used: {max_mem_gb} GB")
+        task_metrics[task_name]["max_memory_gb"] = max_mem_gb
+
+        for k, v in aggregate_metrics.items():
+            task_metrics[task_name][k] = sum(v) / len(v)
+
         if task.requires_logits:
-            task_metrics[task_name]["task_metrics"] = task.test_metrics(all_probs)
+            metrics = task.test_metrics(all_probs)
         else:
-            task_metrics[task_name]["task_metrics"] = task.test_metrics(predictions)
-        print(task_metrics[task_name]["task_metrics"])
+            metrics = task.test_metrics(predictions)
+
+        for k, v in metrics.items():
+            if type(v) == dict:
+                for kk, vv in v.items():
+                    task_metrics[task_name][f"{k}_{kk}"] = vv
+            else:
+                task_metrics[task_name][k] = v
+
+        print(task_metrics[task_name])
+
+    print(task_metrics)
 
 
 if __name__ == "__main__":
