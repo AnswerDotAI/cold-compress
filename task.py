@@ -167,10 +167,10 @@ class Squality(EvaluationTask):
 class TriviaQA(EvaluationTask):
     DEFAULT_PROMPT_TEMPLATE = """You are given a question and potentially relevant context from Wikipedia. Answer the question without any explanation.
 
-Context:
+====CONTEXT====
 {context}
 
-Question:
+====QUESTION====
 {question}"""
 
     def __init__(
@@ -289,7 +289,7 @@ class QMSum(EvaluationTask):
 ====MEETING TRANSCRIPT====
 {transcript}
 
-====Query====
+====QUERY====
 {query}"""
 
     def __init__(
@@ -366,11 +366,14 @@ class TruthfulQA(LogitEvaluationTask):
     DEFAULT_PROMPT_TEMPLATE = """You will be shown a question along with several possible answers. Please carefully read the question and the answer choices and pick the best answer.
 IMPORTANT: You should simply provide the letter corresponding to the answer choice that you picked. You do not need to write out the entire answer or provide any explanation.
 
-Question:
+====QUESTION====
 {question}
 
-Answer choices:
-{choices}"""
+====ANSWER CHOICES====
+{choices}
+
+Answer:
+"""
 
     def __init__(self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1, **kwargs):
         super().__init__(
@@ -427,13 +430,13 @@ class ScrollsQuality(LogitEvaluationTask):
     DEFAULT_PROMPT_TEMPLATE = """You will be given a context, a question related to that context, and four possible answer choices. Carefully read the context, question, and answer choices, then select the best answer.
 IMPORTANT: Provide only the letter corresponding to your chosen answer. Do not write out the full answer or give any explanation.
 
-Context:
+====CONTEXT====
 {context}
 
-Question:
+====QUESTION====
 {question}
 
-Answer choices:
+====ANSWER CHOICES====
 {choices}
 
 Answer:
