@@ -64,14 +64,14 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         help="The number of tokens to evict KV-Cache reaches capacity (max_cache_length). Expressed as a fraction of max_cache_length.",
     )
     group.add_argument(
-        "-attn_thresholding",
+        "--attn_thresholding",
         default=False,
         action="store_true",
         help="Whether to accumulate number of times a token was unimportant (binary) versus raw un-normalized probabilities. If true, more memory efficient.",
     )
     group.add_argument(
         "--attn_record_freq",
-        default=10,
+        default=1,
         type=int,
         help="How often to record attention weights for the ScissorHands cache.",
     )

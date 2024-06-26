@@ -197,6 +197,17 @@ class Transformer(nn.Module):
         for layer in self.layers:
             layer.attention.kv_cache.reset()
 
+    def get_cache_stats(self, prompt_len, gen_len):
+        stats = {}
+        final_pos = prompt_len + gen_len - 1
+        for layer_idx, layer in enumerate(self.layers):
+            stats[f"compression_ratio_{layer_idx}"] = (
+                layer.attention.kv_cache.compression_ratio(
+                    input_pos=torch.tensor(final_pos)
+                ).item()
+            )
+        return stats
+
     def forward(
         self,
         idx: Tensor,

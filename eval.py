@@ -7,6 +7,7 @@ import sys
 import time
 import yaml
 import contextlib
+import pandas as pd
 from pathlib import Path
 from typing import Optional, List
 from collections import defaultdict
@@ -22,6 +23,7 @@ from generation_utils import (
     compute_max_seq_length,
     decode_one_token,
     device_sync,
+    get_cache_stats,
     prefill,
     reset_caches,
     setup_caches,
@@ -118,6 +120,7 @@ def main(
         }
         predictions = []
         all_probs = []
+        stats = []
 
         inputs = [
             encode(tokenizer, row["prompt"], device="cpu", is_chat=is_chat)
@@ -158,9 +161,14 @@ def main(
             device_sync(device=device)  # MKG
             t = time.perf_counter() - t0
 
-            pred = tokenizer.decode(y.tolist()).split(
-                tokenizer.decode(inputs[i].tolist())
-            )[1]
+            prompt = tokenizer.decode(inputs[i].tolist())
+
+            pred = tokenizer.decode(y.tolist()).split(prompt)[1]
+
+            if args.debug:
+                print(f"Prompt: {prompt}")
+                print(f"Prediction: {pred}")
+
             predictions.append(pred)
             if task.requires_logits:
                 all_probs.append(
@@ -171,6 +179,11 @@ def main(
             aggregate_metrics["tokens_per_sec"].append(tokens_sec)
 
             # Reset Counters for KV Cache
+            num_toks = y.size(0)
+            num_new_toks = num_toks - prompt_length
+            row_stats = get_cache_stats(model, prompt_length, num_new_toks)
+            row_stats["num_toks"] = num_toks
+            stats.append(row_stats)
             reset_caches(model)
 
         print(
@@ -185,6 +198,8 @@ def main(
         else:
             task_metrics[task_name]["task_metrics"] = task.test_metrics(predictions)
         print(task_metrics[task_name]["task_metrics"])
+        stats = pd.DataFrame(stats)
+        print(stats.mean())
 
 
 if __name__ == "__main__":

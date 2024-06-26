@@ -183,6 +183,10 @@ def reset_caches(model: Transformer):
     model.reset_caches()
 
 
+def get_cache_stats(model: Transformer, prompt_len: int, gen_len: int):
+    return model.get_cache_stats(prompt_len, gen_len)
+
+
 @torch.no_grad()
 def generate(
     model: Transformer,
