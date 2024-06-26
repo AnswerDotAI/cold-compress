@@ -34,6 +34,7 @@ class ModelArgs:
     rope_base: float = 10000
     norm_eps: float = 1e-5
     attention_bias: bool = False
+    max_length: int = 4096
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -104,6 +105,7 @@ transformer_configs = {
         intermediate_size=14336,
         vocab_size=128256,
         rope_base=500000,
+        max_length=8192,
     ),
     "Meta-Llama-3-8B-Instruct-4-Layers": dict(
         block_size=8192,
@@ -114,6 +116,7 @@ transformer_configs = {
         intermediate_size=14336,
         vocab_size=128256,
         rope_base=500000,
+        max_length=8192,
     ),
     "Qwen2-1.5B-Instruct": dict(
         block_size=32768,
@@ -126,6 +129,7 @@ transformer_configs = {
         rope_base=1000000,
         attention_bias=True,
         norm_eps=1e-6,
+        max_length=32768,
     ),
     "Qwen2-0.5B-Instruct": dict(
         block_size=32768,
@@ -138,6 +142,7 @@ transformer_configs = {
         rope_base=1000000,
         attention_bias=True,
         norm_eps=1e-6,
+        max_length=32768,
     ),
 }
 

@@ -14,9 +14,12 @@ class EvaluationTask(ABC):
     mandatory_cols = ["context", "question", "prompt", "labels"]
     requires_logits = False
 
-    def __init__(self, prompt_template, max_tokens, hf_args=None, **kwargs):
+    def __init__(
+        self, prompt_template, max_tokens, model_max_length, hf_args=None, **kwargs
+    ):
         self.prompt_template = prompt_template
         self.max_tokens = max_tokens
+        self.model_max_length = model_max_length
         self.hf_args = hf_args
         self.debug = kwargs.pop("debug", False)
 
@@ -46,10 +49,20 @@ class EvaluationTask(ABC):
                 n = min(10, len(split_data))
                 print(f"Taking first {n} examples")
                 split_data = split_data.select(range(n))
-            self.dataset[split] = split_data.map(
+            data = split_data.map(
                 self.prepare_batch, batched=True, remove_columns=remove_cols
             )
+            # Filter out examples that are too long for the model
+            filtered_data = data.filter(
+                lambda x: len(x["prompt"].split()) < self.model_max_length
+            )
+            print(
+                f"Filtered {len(data) - len(filtered_data)} examples from split {split}"
+            )
+            self.dataset[split] = filtered_data
+
         self.is_ready[split] = True
+
         return self.dataset[split]
 
     def get_train(self):
@@ -370,10 +383,7 @@ IMPORTANT: You should simply provide the letter corresponding to the answer choi
 {question}
 
 ====ANSWER CHOICES====
-{choices}
-
-Answer:
-"""
+{choices}"""
 
     def __init__(self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1, **kwargs):
         super().__init__(
@@ -437,10 +447,7 @@ IMPORTANT: Provide only the letter corresponding to your chosen answer. Do not w
 {question}
 
 ====ANSWER CHOICES====
-{choices}
-
-Answer:
-"""
+{choices}"""
 
     def __init__(
         self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=128, **kwargs
