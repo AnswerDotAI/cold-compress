@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from string import ascii_uppercase
 
+import random
 import numpy as np
 from datasets import load_dataset
 
@@ -21,7 +22,7 @@ class EvaluationTask(ABC):
         self.max_tokens = max_tokens
         self.model_max_length = model_max_length
         self.hf_args = hf_args
-        self.debug = kwargs.pop("debug", False)
+        self.num_samples = kwargs.pop("num_samples", None)
 
         # Download the dataset
         self._download()
@@ -45,23 +46,27 @@ class EvaluationTask(ABC):
         ]
         if not self.is_ready[split]:
             split_data = self.dataset[split]
-            if self.debug:
-                n = min(10, len(split_data))
-                print(f"Taking first {n} examples")
-                split_data = split_data.select(range(n))
-            data = split_data.map(
+            split_data = split_data.map(
                 self.prepare_batch, batched=True, remove_columns=remove_cols
             )
+
             # Filter out examples that are too long for the model
-            filtered_data = data.filter(
+            filtered_data = split_data.filter(
                 lambda x: len(x["prompt"].split()) < self.model_max_length
             )
             print(
-                f"Filtered {len(data) - len(filtered_data)} examples from split {split}"
+                f"Filtered {len(split_data) - len(filtered_data)} examples from split {split}"
             )
-            self.dataset[split] = filtered_data
 
-        self.is_ready[split] = True
+            if self.num_samples is not None:
+                n = min(self.num_samples, len(filtered_data))
+                print(f"Randomly sample {n} examples")
+                # Use a fixed seed for reproducibility
+                inds = random.Random(n).sample(range(len(filtered_data)), n)
+                filtered_data = filtered_data.select(inds)
+
+            self.dataset[split] = filtered_data
+            self.is_ready[split] = True
 
         return self.dataset[split]
 
@@ -122,7 +127,7 @@ class EvaluationTask(ABC):
 
 class LogitEvaluationTask(EvaluationTask):
     def __init__(self, prompt_template, max_tokens, hf_args=None, **kwargs):
-        super().__init__(prompt_template, max_tokens, hf_args, **kwargs)
+        super().__init__(prompt_template, max_tokens, hf_args=hf_args, **kwargs)
         self.requires_logits = True
 
     @abstractmethod
@@ -449,9 +454,7 @@ IMPORTANT: Provide only the letter corresponding to your chosen answer. Do not w
 ====ANSWER CHOICES====
 {choices}"""
 
-    def __init__(
-        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=128, **kwargs
-    ):
+    def __init__(self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1, **kwargs):
         super().__init__(
             prompt_template, max_tokens, hf_args=["rbiswasfc/quality"], **kwargs
         )

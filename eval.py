@@ -230,7 +230,10 @@ def main(
         )
         prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
 
-    task_kwargs = {"model_max_length": model.config.max_length, "debug": args.debug}
+    task_kwargs = {
+        "model_max_length": model.config.max_length,
+        "num_samples": args.num_samples,
+    }
     eval_tasks = {task: AutoTask.from_name(task, **task_kwargs) for task in tasks}
 
     task_metrics = defaultdict(dict)
@@ -303,6 +306,13 @@ if __name__ == "__main__":
         default=False,
         action="store_true",
         help="Debug mode uses first 10 examples in dataset.",
+    )
+
+    parser.add_argument(
+        "--num_samples",
+        type=int,
+        default=None,
+        help="Number of examples to sample for evaluation. Defaults to None, which uses the full dataset.",
     )
 
     parser.add_argument(
