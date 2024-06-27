@@ -233,6 +233,7 @@ def main(
     task_kwargs = {
         "model_max_length": model.config.max_length,
         "num_samples": args.num_samples,
+        "tokenizer": tokenizer.encode_prompt if is_chat else tokenizer.encode,
     }
     eval_tasks = {task: AutoTask.from_name(task, **task_kwargs) for task in tasks}
 

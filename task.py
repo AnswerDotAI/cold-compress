@@ -16,11 +16,12 @@ class EvaluationTask(ABC):
     requires_logits = False
 
     def __init__(
-        self, prompt_template, max_tokens, model_max_length, hf_args=None, **kwargs
+        self, prompt_template, max_tokens, model_max_length, tokenizer, hf_args=None, **kwargs
     ):
         self.prompt_template = prompt_template
         self.max_tokens = max_tokens
         self.model_max_length = model_max_length
+        self.tokenizer = tokenizer
         self.hf_args = hf_args
         self.num_samples = kwargs.pop("num_samples", None)
 
@@ -50,9 +51,9 @@ class EvaluationTask(ABC):
                 self.prepare_batch, batched=True, remove_columns=remove_cols
             )
 
-            # Filter out examples that are too long for the model
+            # Filter out examples that could be too long for the model
             filtered_data = split_data.filter(
-                lambda x: len(x["prompt"].split()) < self.model_max_length
+                lambda x: len(self.tokenizer(x["prompt"])) + self.max_tokens <= self.model_max_length
             )
             print(
                 f"Filtered {len(split_data) - len(filtered_data)} examples from split {split}"

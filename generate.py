@@ -21,7 +21,6 @@ from generation_utils import (
     device_sync,
     prefill,
 )
-from tokenizer import encode
 
 torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
