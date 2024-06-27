@@ -8,6 +8,7 @@ import pandas as pd
 from datasets import load_dataset
 
 from metric import AutoMetric
+from tokenizer import get_tokenizer
 
 
 class EvaluationTask(ABC):
@@ -708,13 +709,38 @@ if __name__ == "__main__":
     parser.add_argument("--compute_stats", action="store_true", default=False)
     parser.add_argument("--num_samples", default=int(1e10), type=int)
 
+    parser.add_argument(
+        "--checkpoint_path",
+        type=Path,
+        default=Path(__file__).resolve().parent
+        / "checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth",
+        help="Model checkpoint path.",
+    )
+
     args = parser.parse_args()
+
+    is_chat = (
+        "chat" in str(args.checkpoint_path).lower()
+        or "instruct" in str(args.checkpoint_path).lower()
+    )
+
+    tokenizer_path = args.checkpoint_path.parent / "tokenizer.model"
+    if not tokenizer_path.is_file():
+        # If there's no tokenizer.model, try to load the tokenizer from the parent directory
+        # NOTE: We assume the tokenizer in the parent directory is compatible with huggingface transformers
+        tokenizer_path = args.checkpoint_path.parent
+
+    tokenizer = get_tokenizer(tokenizer_path, args.checkpoint_path, is_chat=is_chat)
 
     # Dummy values
     task_kwargs = {
         "model_max_length": int(1e10),
         "num_samples": args.num_samples,
+        "tokenizer": tokenizer.encode_prompt if is_chat else tokenizer.encode,
     }
+
+    def num_toks(x):
+        return len(task_kwargs["tokenizer"](x))
 
     if args.compute_stats:
         stats = []
@@ -726,7 +752,7 @@ if __name__ == "__main__":
             prompts = test["prompt"]
             labels = test["labels"]
 
-            prompt_tokens = sum([len(p.split(" ")) for p in test["prompt"]]) / len(test)
+            prompt_tokens = sum([num_toks(p) for p in test["prompt"]]) / len(test)
             num_references = sum(
                 [1 if type(l) != list else len(l) for l in labels]
             ) / len(test)
@@ -735,7 +761,7 @@ if __name__ == "__main__":
             for l in labels:
                 if type(l) != list:
                     l = [l]
-                avg_reference_len.append(sum([len(x.split(" ")) for x in l]) / len(l))
+                avg_reference_len.append(sum([num_toks(x) for x in l]) / len(l))
             avg_reference_len = sum(avg_reference_len) / len(avg_reference_len)
 
             avg_n_choices = (

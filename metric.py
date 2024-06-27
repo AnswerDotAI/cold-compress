@@ -200,30 +200,48 @@ class LLMJudge(LLMRouge):
         ), "Please set the ANTHROPIC_API_KEY environment variable."
         super().__init__(**kwargs)
 
+        self.criteria = list(sorted([k for k in CRITERIA]))
+        self.criteria_def = "\n".join([f"{k}: {CRITERIA[k]}" for k in self.criteria])
+        self.prefill = f"\n\n====SCORES for {', '.join(self.criteria)}====\n\n{self.criteria[0]}:"
+
+    def parse_scores(self, output):
+        try:
+            score_dict = dict(
+                [s.strip().split(":") for s in output.split("\n") if len(s.strip()) > 0]
+            )
+            score_dict = {k: self.parse_int(v) for k, v in score_dict.items()}
+        except Exception as e:
+            print(e)
+            print(output)
+            raise Exception
+        
+    def claudette_scorecard(self, prompt, prediction):
+        prompt = LLM_JUDGE_TEMPLATE.format(
+            criteria=self.criteria_def, prompt=prompt, prediction=prediction
+        )
+        scorecard = (
+            self.chat(prompt, prefill=self.prefill)
+            .content[0]
+            .text[len(self.prefill) - len(self.criteria[0]) - 1 :]
+            .strip()
+        )
+        return scorecard
+
     def compute(self, prompts, predictions, labels):
         scores = []
 
-        criteria = list(sorted([k for k in CRITERIA]))
-        criteria_def = "\n".join([f"{k}: {CRITERIA[k]}" for k in criteria])
-        prefill = f"\n\n====SCORES for {', '.join(criteria)}====\n\n{criteria[0]}:"
-
-        for pred, prompt in zip(predictions, prompts):
-            prompt = LLM_JUDGE_TEMPLATE.format(
-                criteria=criteria_def, prompt=prompt, prediction=pred
-            )
-            score = (
-                self.chat(prompt, prefill=prefill)
-                .content[0]
-                .text[len(prefill) - len(criteria[0]) - 1 :]
-                .strip()
-            )
-            score_dict = dict(
-                [s.strip().split(":") for s in score.split("\n") if len(s.strip()) > 0]
-            )
-            score_dict = {k: self.parse_int(v) for k, v in score_dict.items()}
+        for prompt, pred in zip(prompts, predictions):
+            try:
+                scorecard = self.claudette_scorecard(prompt, pred)
+            except Exception as e:
+                if "prompt is too long" in str(e):
+                    prompt_toks = prompt.split(" ")
+                    prompt = " ".join(prompt_toks[: len(prompt_toks) // 2])
+                    scorecard = self.claudette_scorecard(prompt, pred)
+            score_dict = self.parse_scores(scorecard)
             scores.append(score_dict)
 
-        return {k: np.mean([s[k] for s in scores]) for k in criteria}
+        return {k: np.mean([s[k] for s in scores]) for k in self.criteria}
 
 
 METRIC_MAPPING = {
