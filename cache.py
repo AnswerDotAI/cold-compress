@@ -42,7 +42,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
     # Optional Cache Kwargs depending on cache_strategy
     group.add_argument(
         "--global_tokens",
-        default=0,
+        default=1,
         type=int,
         help="The number of initial tokens to always include in the KV-Cache.  \
         If using window strategy, the actual window becomes max_cache_length - global_tokens.",

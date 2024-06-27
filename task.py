@@ -19,7 +19,13 @@ class EvaluationTask(ABC):
     requires_logits = False
 
     def __init__(
-        self, prompt_template, max_tokens, model_max_length, tokenizer, hf_args=None, **kwargs
+        self,
+        prompt_template,
+        max_tokens,
+        model_max_length,
+        tokenizer,
+        hf_args=None,
+        **kwargs,
     ):
         self.prompt_template = prompt_template
         self.max_tokens = max_tokens
@@ -56,7 +62,8 @@ class EvaluationTask(ABC):
 
             # Filter out examples that could be too long for the model
             filtered_data = split_data.filter(
-                lambda x: len(self.tokenizer(x["prompt"])) + self.max_tokens <= self.model_max_length
+                lambda x: len(self.tokenizer(x["prompt"])) + self.max_tokens
+                <= self.model_max_length
             )
             print(
                 f"Filtered {len(split_data) - len(filtered_data)} examples from split {split}"

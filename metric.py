@@ -4,6 +4,7 @@ import numpy as np
 import regex as re
 from claudette import Chat, models
 from evaluate import load
+import regex as re
 
 
 class Metric:
@@ -202,19 +203,24 @@ class LLMJudge(LLMRouge):
 
         self.criteria = list(sorted([k for k in CRITERIA]))
         self.criteria_def = "\n".join([f"{k}: {CRITERIA[k]}" for k in self.criteria])
-        self.prefill = f"\n\n====SCORES for {', '.join(self.criteria)}====\n\n{self.criteria[0]}:"
+        self.prefill = (
+            f"\n\n====SCORES for {', '.join(self.criteria)}====\n\n{self.criteria[0]}:"
+        )
 
-    def parse_scores(self, output):
+    def parse_scorecard(self, scorecard):
         try:
-            score_dict = dict(
-                [s.strip().split(":") for s in output.split("\n") if len(s.strip()) > 0]
-            )
-            score_dict = {k: self.parse_int(v) for k, v in score_dict.items()}
+            return {
+                k: int(v)
+                for k, v in dict(
+                    re.findall(rf"({'|'.join(self.criteria)})\W+(\d+)", scorecard)
+                ).items()
+            }
         except Exception as e:
             print(e)
-            print(output)
-            raise Exception
-        
+            raise Exception(
+                f"Could not parse LLM-generated scorecard for {self.__class__}:\n{scorecard}"
+            )
+
     def claudette_scorecard(self, prompt, prediction):
         prompt = LLM_JUDGE_TEMPLATE.format(
             criteria=self.criteria_def, prompt=prompt, prediction=prediction
@@ -234,11 +240,13 @@ class LLMJudge(LLMRouge):
             try:
                 scorecard = self.claudette_scorecard(prompt, pred)
             except Exception as e:
-                if "prompt is too long" in str(e):
-                    prompt_toks = prompt.split(" ")
-                    prompt = " ".join(prompt_toks[: len(prompt_toks) // 2])
-                    scorecard = self.claudette_scorecard(prompt, pred)
-            score_dict = self.parse_scores(scorecard)
+                # A good change the prompt is too long
+                # TODO: better error handling.
+                print(e)
+                prompt_toks = prompt.split(" ")
+                prompt = " ".join(prompt_toks[: len(prompt_toks) // 2])
+                scorecard = self.claudette_scorecard(prompt, pred)
+            score_dict = self.parse_scorecard(scorecard)
             scores.append(score_dict)
 
         return {k: np.mean([s[k] for s in scores]) for k in self.criteria}
