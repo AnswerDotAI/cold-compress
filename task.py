@@ -1,8 +1,10 @@
 import random
 from abc import ABC, abstractmethod
 from string import ascii_uppercase
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from datasets import load_dataset
 
 from metric import AutoMetric
@@ -59,7 +61,7 @@ class EvaluationTask(ABC):
                 f"Filtered {len(split_data) - len(filtered_data)} examples from split {split}"
             )
 
-            if self.num_samples is not None:
+            if self.num_samples is not None and len(filtered_data) > self.num_samples:
                 n = min(self.num_samples, len(filtered_data))
                 print(f"Randomly sample {n} examples")
                 # Use a fixed seed for reproducibility
@@ -208,6 +210,7 @@ class TriviaQA(EvaluationTask):
         self.metrics = {
             "BertScore": AutoMetric.from_name("bertscore"),
             "Rouge": AutoMetric.from_name("rouge"),
+            "LLM-Rouge": AutoMetric.from_name("llm-rouge"),
         }
 
     def prepare_row(self, row: dict):
@@ -415,7 +418,7 @@ IMPORTANT: You should simply provide the letter corresponding to the answer choi
         self.metrics = {
             "Accuracy": AutoMetric.from_name("accuracy"),
         }
-        self.mandatory_cols.append("num_choices")
+        self.mandatory_cols = self.mandatory_cols.copy() + ["num_choices"]
 
     def prepare_row(self, row: dict):
         question = row["question"]
@@ -475,7 +478,7 @@ IMPORTANT: Provide only the letter corresponding to your chosen answer. Do not w
         }
         self.test_split = "validation"  #     Test split doesn't have ground truths - use validation split
 
-        self.mandatory_cols.append("num_choices")
+        self.mandatory_cols = self.mandatory_cols.copy() + ["num_choices"]
 
     def prepare_row(self, row: dict):
         context = row["context"]
@@ -702,31 +705,82 @@ if __name__ == "__main__":
     parser.add_argument(
         "--task", type=str, default="triviaqa", choices=TASK_MAPPING.keys()
     )
+    parser.add_argument("--compute_stats", action="store_true", default=False)
+    parser.add_argument("--num_samples", default=int(1e10), type=int)
+
     args = parser.parse_args()
 
-    task = AutoTask.from_name(args.task)
+    # Dummy values
+    task_kwargs = {
+        "model_max_length": int(1e10),
+        "num_samples": args.num_samples,
+    }
 
-    test = task.get_test()
+    if args.compute_stats:
+        stats = []
+        for task_name in TASK_MAPPING.keys():
+            print(f"Computing stats for {task_name}")
+            task = AutoTask.from_name(task_name, **task_kwargs)
+            test = task.get_test()
 
-    print("Example test datapoint:\n\n")
-    ex = test[0]
-    for k, v in ex.items():
-        print(f"{k}:\n{v}\n\n")
+            prompts = test["prompt"]
+            labels = test["labels"]
 
-    train_predictions = ["This is a train prediction"] * len(task.dataset["train"])
-    test_predictions = ["This is a test prediction"] * len(test)
+            prompt_tokens = sum([len(p.split(" ")) for p in test["prompt"]]) / len(test)
+            num_references = sum(
+                [1 if type(l) != list else len(l) for l in labels]
+            ) / len(test)
 
-    print("A 'not ready' error should be displayed below:\n\n")
-    try:
-        task.train_metrics(predictions=train_predictions)
-    except Exception as e:
-        print(e)
+            avg_reference_len = []
+            for l in labels:
+                if type(l) != list:
+                    l = [l]
+                avg_reference_len.append(sum([len(x.split(" ")) for x in l]) / len(l))
+            avg_reference_len = sum(avg_reference_len) / len(avg_reference_len)
 
-    print("A 'length mismatch' error should be displayed below:\n\n")
-    try:
-        task.test_metrics(predictions=test_predictions[:-1])
-    except Exception as e:
-        print(e)
+            avg_n_choices = (
+                None
+                if "num_choices" not in test
+                else sum(test["num_choices"]) / len(test)
+            )
 
-    print("Dummy metrics for test split:\n\n")
-    print(task.test_metrics(predictions=test_predictions))
+            stats.append(
+                {
+                    "task": task_name,
+                    "n": len(test),
+                    "is_mcqa": task.requires_logits,
+                    "prompt_tokens": prompt_tokens,
+                    "label_tokens": avg_reference_len,
+                    "n_choices": avg_n_choices,
+                }
+            )
+
+        stats = pd.DataFrame(stats)
+        stats_fn = Path(__file__).parent / "cache_configs" / "task_stats.csv"
+        stats = stats.sort_values("task").reset_index(drop=True)
+        stats.to_csv(stats_fn, index=False)
+    else:
+        task = AutoTask.from_name(args.task, **task_kwargs)
+        test = task.get_test()
+        print("Example test datapoint:\n\n")
+        ex = test[0]
+        for k, v in ex.items():
+            print(f"{k}:\n{v}\n\n")
+
+        train_predictions = ["This is a train prediction"] * len(task.dataset["train"])
+        test_predictions = ["This is a test prediction"] * len(test)
+
+        print("A 'not ready' error should be displayed below:\n\n")
+        try:
+            task.train_metrics(predictions=train_predictions)
+        except Exception as e:
+            print(e)
+
+        print("A 'length mismatch' error should be displayed below:\n\n")
+        try:
+            task.test_metrics(predictions=test_predictions[:-1])
+        except Exception as e:
+            print(e)
+
+        print("Dummy metrics for test split:\n\n")
+        print(task.test_metrics(predictions=test_predictions))
