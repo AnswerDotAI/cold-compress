@@ -83,6 +83,17 @@ class RulerStringMatch(Metric):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
+
+    @staticmethod
+    def postprocess_pred(predict_str: str):
+        predict_str = predict_str.strip()
+
+        # Remove all non-printable characters
+        np_pattern = re.compile(r'[\x00-\x1f]')
+        predict_str = np_pattern.sub('\n', predict_str).strip()
+
+        return predict_str
+
     @staticmethod
     def string_match_part(refs, preds):
         scores = [
@@ -90,7 +101,7 @@ class RulerStringMatch(Metric):
             for pred, ref in zip(preds, refs)
         ]
         score = sum(scores) / len(preds) * 100
-        return {"string_match_score": round(score, 4)}
+        return {"score": round(score, 4)}
 
     @staticmethod
     def string_match_all(refs, preds):
@@ -99,7 +110,7 @@ class RulerStringMatch(Metric):
             for pred, ref in zip(preds, refs)
         ]
         score = sum(scores) / len(preds) * 100
-        return {"string_match_score": round(score, 4)}
+        return {"score": round(score, 4)}
 
     def _load_metric(self, **kwargs):
         if kwargs.get("match_part", False):
@@ -108,6 +119,7 @@ class RulerStringMatch(Metric):
             self.metric = self.string_match_all
 
     def compute(self, prompts, predictions, references):
+        predictions = [self.postprocess_pred(pred) for pred in predictions]
         return self.metric(references, predictions)
 
 
