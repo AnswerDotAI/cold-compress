@@ -356,6 +356,17 @@ if __name__ == "__main__":
             )
         )
 
+    if args.cache_config:
+        # Get parent directory of current file
+        if not args.cache_config.endswith(".yaml"):
+            args.cache_config = args.cache_config + ".yaml"
+        yaml_fn = Path(__file__).parent / "cache_configs" / args.cache_config
+        assert yaml_fn.exists(), f"Cache config file {yaml_fn} does not exist."
+        with open(yaml_fn, "r") as f:
+            cache_kwargs = yaml.safe_load(f)
+            # Over-write args with cache_kwargs
+            args = argparse.Namespace(**{**vars(args), **cache_kwargs})
+
     out_dir = (
         Path(__file__).parent / "results" / args.cache_strategy / args_to_str(args)
     )
@@ -368,17 +379,6 @@ if __name__ == "__main__":
             print(f"Removing {out_dir}.")
             shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    if args.cache_config:
-        # Get parent directory of current file
-        if not args.cache_config.endswith(".yaml"):
-            args.cache_config = args.cache_config + ".yaml"
-        yaml_fn = Path(__file__).parent / "cache_configs" / args.cache_config
-        assert yaml_fn.exists(), f"Cache config file {yaml_fn} does not exist."
-        with open(yaml_fn, "r") as f:
-            cache_kwargs = yaml.safe_load(f)
-            # Over-write args with cache_kwargs
-            args = argparse.Namespace(**{**vars(args), **cache_kwargs})
 
     cache_compatibility(args)
 
