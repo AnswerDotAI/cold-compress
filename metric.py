@@ -1,8 +1,9 @@
 import os
-from claudette import models, Chat
+
 import numpy as np
-from evaluate import load
 import regex as re
+from claudette import Chat, models
+from evaluate import load
 
 
 class Metric:
@@ -70,6 +71,54 @@ class Accuracy(Metric):
         self.metric = accuracy_score
 
     def compute(self, prompts, predictions, references):
+        return self.metric(references, predictions)
+
+
+class RulerStringMatch(Metric):
+    """
+    Metric used in RULER.
+    Reference: https://github.com/hsiehjackson/RULER/blob/main/scripts/eval/synthetic/constants.py
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    @staticmethod
+    def postprocess_pred(predict_str: str):
+        predict_str = predict_str.strip()
+
+        # Remove all non-printable characters
+        np_pattern = re.compile(r"[\x00-\x1f]")
+        predict_str = np_pattern.sub("\n", predict_str).strip()
+
+        return predict_str
+
+    @staticmethod
+    def string_match_part(refs, preds):
+        scores = [
+            max([1.0 if r.lower() in pred.lower() else 0.0 for r in ref])
+            for pred, ref in zip(preds, refs)
+        ]
+        score = sum(scores) / len(preds) * 100
+        return {"score": round(score, 4)}
+
+    @staticmethod
+    def string_match_all(refs, preds):
+        scores = [
+            sum([1.0 if r.lower() in pred.lower() else 0.0 for r in ref]) / len(ref)
+            for pred, ref in zip(preds, refs)
+        ]
+        score = sum(scores) / len(preds) * 100
+        return {"score": round(score, 4)}
+
+    def _load_metric(self, **kwargs):
+        if kwargs.get("match_part", False):
+            self.metric = self.string_match_part
+        else:
+            self.metric = self.string_match_all
+
+    def compute(self, prompts, predictions, references):
+        predictions = [self.postprocess_pred(pred) for pred in predictions]
         return self.metric(references, predictions)
 
 
@@ -184,6 +233,7 @@ METRIC_MAPPING = {
     "llm-rouge": LLMRouge,
     "llm-as-a-judge": LLMJudge,
     "rouge": Rouge,
+    "ruler-string-match": RulerStringMatch,
 }
 
 

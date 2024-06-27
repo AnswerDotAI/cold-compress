@@ -277,7 +277,7 @@ def main(
             with open(args_fn, "w") as fd:
                 # Convert Path objects to strings
                 cache_kwargs_json = {
-                    k: str(v) if type(v) == Path else v for k, v in cache_kwargs.items()
+                    k: str(v) if isinstance(v, Path) else v for k, v in cache_kwargs.items()
                 }
                 json.dump(cache_kwargs_json, fd, indent=2)
 
