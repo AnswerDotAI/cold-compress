@@ -83,14 +83,13 @@ class RulerStringMatch(Metric):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-
     @staticmethod
     def postprocess_pred(predict_str: str):
         predict_str = predict_str.strip()
 
         # Remove all non-printable characters
-        np_pattern = re.compile(r'[\x00-\x1f]')
-        predict_str = np_pattern.sub('\n', predict_str).strip()
+        np_pattern = re.compile(r"[\x00-\x1f]")
+        predict_str = np_pattern.sub("\n", predict_str).strip()
 
         return predict_str
 

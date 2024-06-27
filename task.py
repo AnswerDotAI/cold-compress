@@ -510,6 +510,7 @@ class RulerQA(EvaluationTask):
     """
     RULER hotpotqa task with 4k context length. (context length can be adjusted as needed)
     """
+
     DEFAULT_PROMPT_TEMPLATE = "{task_input}"
 
     def __init__(
@@ -542,12 +543,13 @@ class RulerQA(EvaluationTask):
             "prompt": prompt,
             "labels": answer,
         }
-    
+
 
 class RulerNIAH(EvaluationTask):
     """
     RULER Multi-keys Needle-in-a-haystack (NIAH) task with 4k context length. (context length can be adjusted as needed)
     """
+
     DEFAULT_PROMPT_TEMPLATE = "{task_input}"
 
     def __init__(
@@ -568,7 +570,9 @@ class RulerNIAH(EvaluationTask):
     def prepare_row(self, row: dict):
         task_input = row["input"]
 
-        question = "The special magic number for fair-sprout mentioned in the provided text is"
+        question = (
+            "The special magic number for fair-sprout mentioned in the provided text is"
+        )
         context = task_input
 
         prompt = self.prompt_template.format(task_input=task_input)
@@ -586,6 +590,7 @@ class RulerVT(EvaluationTask):
     """
     RULER Multi-hop Tracing: Variable Tracking (VT) task with 4k context length. (context length can be adjusted as needed)
     """
+
     DEFAULT_PROMPT_TEMPLATE = "{task_input}"
 
     def __init__(
@@ -618,11 +623,13 @@ class RulerVT(EvaluationTask):
             "prompt": prompt,
             "labels": answer,
         }
-    
+
+
 class RulerCWE(EvaluationTask):
     """
     RULER Aggregation: Common Words (CWE) task with 4k context length. (context length can be adjusted as needed)
     """
+
     DEFAULT_PROMPT_TEMPLATE = "{task_input}"
 
     def __init__(
@@ -655,8 +662,6 @@ class RulerCWE(EvaluationTask):
             "prompt": prompt,
             "labels": answer,
         }
-    
-
 
 
 TASK_MAPPING = {
@@ -670,7 +675,7 @@ TASK_MAPPING = {
     "rulerqa": RulerQA,
     "rulerniah": RulerNIAH,
     "rulervt": RulerVT,
-    "rulercwe": RulerCWE
+    "rulercwe": RulerCWE,
 }
 
 
