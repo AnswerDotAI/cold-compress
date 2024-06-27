@@ -1,8 +1,9 @@
 import os
-from claudette import models, Chat
+
 import numpy as np
-from evaluate import load
 import regex as re
+from claudette import Chat, models
+from evaluate import load
 
 
 class Metric:
@@ -68,6 +69,43 @@ class Accuracy(Metric):
         from sklearn.metrics import accuracy_score
 
         self.metric = accuracy_score
+
+    def compute(self, prompts, predictions, references):
+        return self.metric(references, predictions)
+
+
+class RulerStringMatch(Metric):
+    """
+    Metric used in RULER.
+    Reference: https://github.com/hsiehjackson/RULER/blob/main/scripts/eval/synthetic/constants.py
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    @staticmethod
+    def string_match_part(refs, preds):
+        scores = [
+            max([1.0 if r.lower() in pred.lower() else 0.0 for r in ref])
+            for pred, ref in zip(preds, refs)
+        ]
+        score = sum(scores) / len(preds) * 100
+        return {"string_match_score": round(score, 4)}
+
+    @staticmethod
+    def string_match_all(refs, preds):
+        scores = [
+            sum([1.0 if r.lower() in pred.lower() else 0.0 for r in ref]) / len(ref)
+            for pred, ref in zip(preds, refs)
+        ]
+        score = sum(scores) / len(preds) * 100
+        return {"string_match_score": round(score, 4)}
+
+    def _load_metric(self, **kwargs):
+        if kwargs.get("match_part", False):
+            self.metric = self.string_match_part
+        else:
+            self.metric = self.string_match_all
 
     def compute(self, prompts, predictions, references):
         return self.metric(references, predictions)
@@ -184,6 +222,7 @@ METRIC_MAPPING = {
     "llm-rouge": LLMRouge,
     "llm-as-a-judge": LLMJudge,
     "rouge": Rouge,
+    "ruler-string-match": RulerStringMatch,
 }
 
 

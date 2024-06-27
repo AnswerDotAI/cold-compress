@@ -1,7 +1,7 @@
+import random
 from abc import ABC, abstractmethod
 from string import ascii_uppercase
 
-import random
 import numpy as np
 from datasets import load_dataset
 
@@ -506,6 +506,43 @@ IMPORTANT: Provide only the letter corresponding to your chosen answer. Do not w
         return preds
 
 
+class RulerQA(EvaluationTask):
+    DEFAULT_PROMPT_TEMPLATE = "{task_input}"
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=32, **kwargs
+    ):
+        super().__init__(
+            prompt_template,
+            max_tokens,
+            hf_args=["rbiswasfc/ruler", "qa_2_4k"],
+            **kwargs,
+        )
+
+        self.metrics = {
+            "StringMatch": AutoMetric.from_name("ruler-string-match", match_part=True),
+        }
+
+    def prepare_row(self, row: dict):
+        task_input = row["input"]
+
+        question = task_input.split("Question:")[-1].split("Answer:")[0].strip()
+        context = task_input.split("Question:")[0].strip()
+        context = context.replace(
+            "Answer the question based on the given documents.", ""
+        )
+
+        prompt = self.prompt_template.format(task_input=task_input)
+        answer = row["outputs"]  # List[str]
+
+        return {
+            "context": context,
+            "question": question,
+            "prompt": prompt,
+            "labels": answer,
+        }
+
+
 TASK_MAPPING = {
     "squality": Squality,
     "triviaqa": TriviaQA,
@@ -514,6 +551,7 @@ TASK_MAPPING = {
     "musique": Musique,
     "truthfulqa": TruthfulQA,
     "scrollsquality": ScrollsQuality,
+    "rulerqa": RulerQA,
 }
 
 
