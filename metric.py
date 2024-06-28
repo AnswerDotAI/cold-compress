@@ -161,6 +161,8 @@ class LLMRouge(Metric):
         scores = []
         for p, ls in zip(predictions, labels):
             prompt = REFERENCE_TEMPLATE.format(labels="\n---\n".join(ls), prediction=p)
+            # Clear conversation history
+            self.chat.h = []
             score = (
                 self.chat(prompt, prefill=PREFILL)
                 .content[0]
@@ -225,6 +227,8 @@ class LLMJudge(LLMRouge):
         prompt = LLM_JUDGE_TEMPLATE.format(
             criteria=self.criteria_def, prompt=prompt, prediction=prediction
         )
+        # Clear conversation history
+        self.chat.h = []
         scorecard = (
             self.chat(prompt, prefill=self.prefill)
             .content[0]
@@ -237,15 +241,7 @@ class LLMJudge(LLMRouge):
         scores = []
 
         for prompt, pred in zip(prompts, predictions):
-            try:
-                scorecard = self.claudette_scorecard(prompt, pred)
-            except Exception as e:
-                # A good change the prompt is too long
-                # TODO: better error handling.
-                print(e)
-                prompt_toks = prompt.split(" ")
-                prompt = " ".join(prompt_toks[: len(prompt_toks) // 2])
-                scorecard = self.claudette_scorecard(prompt, pred)
+            scorecard = self.claudette_scorecard(prompt, pred)
             score_dict = self.parse_scorecard(scorecard)
             scores.append(score_dict)
 
