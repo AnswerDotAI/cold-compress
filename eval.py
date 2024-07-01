@@ -6,6 +6,7 @@
 import sys
 import time
 import yaml
+import argparse
 import json
 import contextlib
 import shutil
@@ -50,7 +51,31 @@ from generation_utils import load_model, generate
 from task import TASK_MAPPING, AutoTask
 
 
+def args_to_str(args):
+    RELEVANT_CACHE_KWARGS = get_cache_constructor(args.cache_strategy).relevant_kwargs
+
+    def process_num(n):
+        # Return integer floats as "1" not 1.0
+        # Otherwise, no op
+        if type(n) == float and int(n) == n:
+            return int(n)
+        return n
+
+    return "__".join(
+        sorted(
+            [
+                f"{k}=" + ",".join([str(process_num(m)) for m in v])
+                if type(v) == list
+                else f"{k}={process_num(v)}"
+                for k, v in vars(args).items()
+                if k in RELEVANT_CACHE_KWARGS
+            ]
+        )
+    )
+
+
 def run_task(
+    args: argparse.Namespace,
     task: AutoTask,
     model: Transformer,
     tokenizer: TokenizerInterface,
@@ -165,6 +190,7 @@ def run_task(
 
 
 def main(
+    args: argparse.Namespace,
     tasks: List[str],
     debug: bool = False,
     checkpoint_path: Path = Path(
@@ -253,6 +279,7 @@ def main(
                 task_metrics[task_name] = json.load(fd)
         else:
             task_metrics[task_name], predictions = run_task(
+                args,
                 task,
                 model,
                 tokenizer,
@@ -290,13 +317,33 @@ def main(
         json.dump(task_metrics, fd, indent=2)
 
 
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Evaluation script for different KV-Cache Compression Algorithms."
+def setup(args) -> Path:
+    out_dir = (
+        Path(__file__).parent
+        / "results"
+        / args.checkpoint_path.parent.stem
+        / args.cache_strategy
+        / args_to_str(args)
     )
 
+    print(f"Saving to {out_dir}")
+    # Make out_dir and don't err out if it already exists
+    if out_dir.exists():
+        print(f"Output directory {out_dir} already exists.")
+        if args.overwrite:
+            print(f"Removing {out_dir}.")
+            shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    cache_compatibility(args)
+
+    for k, v in vars(args).items():
+        print(f"{k} -> {v}")
+
+    return out_dir
+
+
+def add_eval_args(parser):
     parser.add_argument(
         "--tasks",
         type=str,
@@ -334,63 +381,37 @@ if __name__ == "__main__":
         help="Name of YAML file in ./cache_configs.",
     )
 
+
+def merge_cache_config(args):
+    if not args.cache_config:
+        return args
+    # Get parent directory of current file
+    if not args.cache_config.endswith(".yaml"):
+        args.cache_config = args.cache_config + ".yaml"
+    yaml_fn = Path(__file__).parent / "cache_configs" / args.cache_config
+    assert yaml_fn.exists(), f"Cache config file {yaml_fn} does not exist."
+    with open(yaml_fn, "r") as f:
+        cache_kwargs = yaml.safe_load(f)
+        # Over-write args with cache_kwargs
+        args = argparse.Namespace(**{**vars(args), **cache_kwargs})
+    return args
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Evaluation script for different KV-Cache Compression Algorithms."
+    )
+
+    add_eval_args(parser)
     add_generation_arguments(parser)
     add_cache_arguments(parser)
 
-    args = parser.parse_args()
+    args = merge_cache_config(parser.parse_args())
 
-    RELEVANT_CACHE_KWARGS = get_cache_constructor(args.cache_strategy).relevant_kwargs
-
-    def args_to_str(args):
-        def process_num(n):
-            # Return integer floats as "1" not 1.0
-            # Otherwise, no op
-            if type(n) == float and int(n) == n:
-                return int(n)
-            return n
-
-        return "__".join(
-            sorted(
-                [
-                    f"{k}=" + ",".join([str(process_num(m)) for m in v])
-                    if type(v) == list
-                    else f"{k}={process_num(v)}"
-                    for k, v in vars(args).items()
-                    if k in RELEVANT_CACHE_KWARGS
-                ]
-            )
-        )
-
-    if args.cache_config:
-        # Get parent directory of current file
-        if not args.cache_config.endswith(".yaml"):
-            args.cache_config = args.cache_config + ".yaml"
-        yaml_fn = Path(__file__).parent / "cache_configs" / args.cache_config
-        assert yaml_fn.exists(), f"Cache config file {yaml_fn} does not exist."
-        with open(yaml_fn, "r") as f:
-            cache_kwargs = yaml.safe_load(f)
-            # Over-write args with cache_kwargs
-            args = argparse.Namespace(**{**vars(args), **cache_kwargs})
-
-    out_dir = (
-        Path(__file__).parent / "results" / args.checkpoint_path.parent.stem / args.cache_strategy / args_to_str(args)
-    )
-
-    print(f"Saving to {out_dir}")
-    # Make out_dir and don't err out if it already exists
-    if out_dir.exists():
-        print(f"Output directory {out_dir} already exists.")
-        if args.overwrite:
-            print(f"Removing {out_dir}.")
-            shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    cache_compatibility(args)
-
-    for k, v in vars(args).items():
-        print(f"{k} -> {v}")
+    out_dir = setup(args)
 
     main(
+        args,
         args.tasks,
         args.debug,
         args.checkpoint_path,
