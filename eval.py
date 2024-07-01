@@ -235,6 +235,9 @@ def main(
         "num_samples": args.num_samples,
         "tokenizer": tokenizer.encode_prompt if is_chat else tokenizer.encode,
     }
+    if tasks == ["all"]:
+        # Evaluate all tasks
+        tasks = list(TASK_MAPPING.keys())
     eval_tasks = {task: AutoTask.from_name(task, **task_kwargs) for task in tasks}
 
     task_metrics = defaultdict(dict)

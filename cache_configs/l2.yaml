@@ -1,0 +1,3 @@
+cache_strategy: "l2"
+feed_long_prompt: True
+global_tokens: 1
