@@ -520,7 +520,7 @@ IMPORTANT: Provide only the letter corresponding to your chosen answer. Do not w
 
 class RulerQA(EvaluationTask):
     """
-    RULER hotpotqa task with 4k context length. (context length can be adjusted as needed)
+    RULER hotpotqa task with 8k context length. (context length can be adjusted as needed)
     """
 
     DEFAULT_PROMPT_TEMPLATE = "{task_input}"
@@ -531,7 +531,7 @@ class RulerQA(EvaluationTask):
         super().__init__(
             prompt_template,
             max_tokens,
-            hf_args=["rbiswasfc/ruler", "qa_2_4k"],
+            hf_args=["rbiswasfc/ruler", "qa_2_8k"],
             **kwargs,
         )
 
@@ -559,7 +559,7 @@ class RulerQA(EvaluationTask):
 
 class RulerNIAH(EvaluationTask):
     """
-    RULER Multi-keys Needle-in-a-haystack (NIAH) task with 4k context length. (context length can be adjusted as needed)
+    RULER Multi-keys Needle-in-a-haystack (NIAH) task with 8k context length. (context length can be adjusted as needed)
     """
 
     DEFAULT_PROMPT_TEMPLATE = "{task_input}"
@@ -570,7 +570,7 @@ class RulerNIAH(EvaluationTask):
         super().__init__(
             prompt_template,
             max_tokens,
-            hf_args=["rbiswasfc/ruler", "niah_multikey_1_4k"],
+            hf_args=["rbiswasfc/ruler", "niah_multikey_1_8k"],
             **kwargs,
         )
 
@@ -600,7 +600,7 @@ class RulerNIAH(EvaluationTask):
 
 class RulerVT(EvaluationTask):
     """
-    RULER Multi-hop Tracing: Variable Tracking (VT) task with 4k context length. (context length can be adjusted as needed)
+    RULER Multi-hop Tracing: Variable Tracking (VT) task with 8k context length. (context length can be adjusted as needed)
     """
 
     DEFAULT_PROMPT_TEMPLATE = "{task_input}"
@@ -611,7 +611,7 @@ class RulerVT(EvaluationTask):
         super().__init__(
             prompt_template,
             max_tokens,
-            hf_args=["rbiswasfc/ruler", "vt_4k"],
+            hf_args=["rbiswasfc/ruler", "vt_8k"],
             **kwargs,
         )
 
@@ -639,7 +639,7 @@ class RulerVT(EvaluationTask):
 
 class RulerCWE(EvaluationTask):
     """
-    RULER Aggregation: Common Words (CWE) task with 4k context length. (context length can be adjusted as needed)
+    RULER Aggregation: Common Words (CWE) task with 8k context length. (context length can be adjusted as needed)
     """
 
     DEFAULT_PROMPT_TEMPLATE = "{task_input}"
@@ -650,7 +650,7 @@ class RulerCWE(EvaluationTask):
         super().__init__(
             prompt_template,
             max_tokens,
-            hf_args=["rbiswasfc/ruler", "cwe_4k"],
+            hf_args=["rbiswasfc/ruler", "cwe_8k"],
             **kwargs,
         )
 
