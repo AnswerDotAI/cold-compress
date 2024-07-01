@@ -1,3 +1,5 @@
 cache_strategy: "l2"
+prompt_compression_strategy: "l2"
 feed_long_prompt: True
-global_tokens: 1
+global_tokens: 4
+recent_window: 10

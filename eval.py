@@ -373,7 +373,7 @@ if __name__ == "__main__":
             args = argparse.Namespace(**{**vars(args), **cache_kwargs})
 
     out_dir = (
-        Path(__file__).parent / "results" / args.cache_strategy / args_to_str(args)
+        Path(__file__).parent / "results" / args.checkpoint_path.parent.stem / args.cache_strategy / args_to_str(args)
     )
 
     print(f"Saving to {out_dir}")
