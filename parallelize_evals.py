@@ -162,7 +162,7 @@ if __name__ == "__main__":
     # Create tasks and add them to the task queue.
     tasks = list(itertools.product(args.tasks, args.cache_sizes, configs))
     print(f"Adding {len(tasks)} tasks into the job queue")
-    for task, cs, config in itertools.product(args.cache_sizes, args.tasks, configs):
+    for task, cs, config in itertools.product(args.tasks, args.cache_sizes, configs):
         gpu_queue.add_job(base_command.format(
                 task=task,
                 chkpt=args.checkpoint_path,
