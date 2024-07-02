@@ -25,26 +25,27 @@ class GPUJobQueue:
 
         # Intialize completed jobs with empty list
         with open(self.completed_file, 'w') as f:
-                json.dump([], f)
+                json.dump([], f, indent=4)
 
     def _save_queue(self):
         with self.queue_lock:
             try:
                 with open(self.queue_file, 'w') as f:
-                    json.dump(list(self.job_queue.queue), f)
+                    json.dump(list(self.job_queue.queue), f, indent=4)
             except Exception as e:
                 print(f"Error saving queue to {self.queue_file}: {str(e)}")
 
     def _save_completed(self, command):
-        try:
-            with open(self.completed_file, 'r+') as f:
-                completed = json.load(f)
-                completed.append(command)
-                f.seek(0)
-                json.dump(completed, f)
-                f.truncate()
-        except Exception as e:
-            print(f"Error updating {self.completed_file}: {str(e)}")
+        with self.queue_lock:
+            try:
+                with open(self.completed_file, 'r+') as f:
+                    completed = json.load(f)
+                    completed.append(command)
+                    f.seek(0)
+                    json.dump(completed, f, indent=4)
+                    f.truncate()
+            except Exception as e:
+                print(f"Error updating {self.completed_file}: {str(e)}")
 
     def add_job(self, bash_command):
         self.job_queue.put(bash_command)
@@ -159,9 +160,9 @@ if __name__ == "__main__":
     base_command = "python eval.py --task {task} --checkpoint {chkpt} --cache_config {config} --num_samples {ns} --feed_long_prompt --compile --max_cache_length {cs}" 
 
     # Create tasks and add them to the task queue.
-    tasks = list(itertools.product(args.cache_sizes, args.tasks, configs))
+    tasks = list(itertools.product(args.tasks, args.cache_sizes, configs))
     print(f"Adding {len(tasks)} tasks into the job queue")
-    for cs, task, config in itertools.product(args.cache_sizes, args.tasks, configs):
+    for task, cs, config in itertools.product(args.cache_sizes, args.tasks, configs):
         gpu_queue.add_job(base_command.format(
                 task=task,
                 chkpt=args.checkpoint_path,
