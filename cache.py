@@ -35,7 +35,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
     group.add_argument(
         "--prompt_compression_strategy",  # This doesn't matter if args.feed_long_prompts is True
         default="recent_global",
-        choices=["recent_global", "snapkv", "l2"],
+        choices=["recent_global", "snapkv", "l2", "random"],
         help="If |prompt| exceeds max_cache_length, we need to specify a strategy for compressing it to max_cache_length.",
     )
 

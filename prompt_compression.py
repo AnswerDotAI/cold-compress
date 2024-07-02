@@ -24,6 +24,37 @@ class PromptCompressor(ABC):
         pass
 
 
+class PromptCompressorRandom(PromptCompressor):
+    def __init__(self, head_specific, **kwargs) -> None:
+        super().__init__(head_specific, **kwargs)
+
+    def is_compatible(self) -> bool:
+        # Can be used with any cache
+        return True
+
+    def requires_attn(self) -> bool:
+        return False
+
+    def __call__(self, input_pos, k_val, v_val):
+        seq_len = input_pos.shape[0]
+        global_idxs = torch.arange(self.global_tokens, device=input_pos.device)
+        rand_idxs = (
+            (
+                self.global_tokens
+                + torch.randperm(seq_len - self.global_tokens, device=input_pos.device)[
+                    : self.max_cache_length - self.global_tokens
+                ]
+            )
+            .sort()
+            .values
+        )
+        keep_idxs = torch.cat([global_idxs, rand_idxs], dim=0)
+        assert len(keep_idxs) == self.max_cache_length
+        k_val = k_val[:, :, keep_idxs]
+        v_val = v_val[:, :, keep_idxs]
+        return keep_idxs, k_val, v_val
+
+
 class PromptCompressorRecentGlobal(PromptCompressor):
     def __init__(self, head_specific, **kwargs) -> None:
         super().__init__(head_specific, **kwargs)
@@ -84,9 +115,10 @@ class PromptCompressorSnapKV(PromptCompressor):
         return True
 
     def __call__(self, input_pos, k_val, v_val, attn):
-        assert self.head_specific, "SnapKV can only be used with head-specific KV-caches, e.g., placing the same token in different locations across heads)."
+        seq_len = input_pos.shape[0]
+        obs_len = min(self.observation_len, seq_len)
 
-        priority = attn[:, :, -self.observation_len :, :].mean(dim=2)
+        priority = attn[:, :, -obs_len:, :].mean(dim=2)
         prev_shape = priority.shape
 
         # We'll be returning the attention history so we need to keep a copy before it's modified
@@ -95,8 +127,9 @@ class PromptCompressorSnapKV(PromptCompressor):
         assert (
             priority.shape == prev_shape
         ), f"Pooling operation should not change the dimension: {prev_shape} -> {priority.shape}"
-        priority[:, :, -self.observation_len :] = (
-            1.0  # Ensure the observation window is selected
+        priority[:, :, -obs_len:] = 1.0  # Ensure the observation window is selected
+        priority[:, :, : self.global_tokens] = (
+            1.0  # Ensure the global tokens are selected
         )
         keep_idxs = (
             priority.topk(self.max_cache_length, dim=-1).indices.sort(dim=-1).values
@@ -152,5 +185,7 @@ def prompt_compressor_constructor(strategy):
         return PromptCompressorSnapKV
     elif strategy == "l2":
         return PromptCompressorL2
+    elif strategy == "random":
+        return PromptCompressorRandom
     else:
         raise ValueError(f"Unknown prompt compression strategy: {strategy}")

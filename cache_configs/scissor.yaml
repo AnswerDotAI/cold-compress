@@ -2,7 +2,7 @@ cache_strategy: "scissor"
 max_cache_length: [1024]
 global_tokens: 4
 history_window_size: 400
-drop_amount: 0.0001
+drop_amount: 0
 recent_window: 10
 attn_thresholding: False
 prompt_compression_strategy: "snapkv"
