@@ -1,4 +1,3 @@
 cache_strategy: "random"
-max_cache_length: [1024]
 feed_long_prompt: True
 global_tokens: 1
