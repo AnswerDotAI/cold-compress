@@ -1,9 +1,8 @@
 cache_strategy: "scissor"
-max_cache_length: [1024]
+prompt_compression_strategy: "snapkv"
 global_tokens: 4
+recent_window: 10
 history_window_size: 400
 drop_amount: 0
-recent_window: 10
 attn_thresholding: False
-prompt_compression_strategy: "snapkv"
 attn_record_freq: 1
