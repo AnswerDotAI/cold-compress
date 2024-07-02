@@ -21,6 +21,7 @@ class GPUJobQueue:
         os.makedirs(self.log_dir, exist_ok=True)
         self.queue_file = os.path.join(self.log_dir, "queued_commands.json")
         self.completed_file = os.path.join(self.log_dir, "completed_commands.json")
+        self.log_files = [os.path.join(self.log_dir, f"gpu{i}.log") for i in range(num_gpus)]
         self.queue_lock = threading.Lock()
 
         # Intialize completed jobs with empty list
@@ -56,10 +57,10 @@ class GPUJobQueue:
         env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = os.path.join(self.log_dir, f"gpu{gpu_id}_{timestamp}.log")
+        log_file = self.log_files[gpu_id] 
 
         try:
-            with open(log_file, "w") as log:
+            with open(log_file, "a") as log:
                 log.write(f"Running command: {bash_command}\n")
                 log.write(f"GPU: {gpu_id}\n")
                 log.write(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -107,9 +108,12 @@ class GPUJobQueue:
 
     def terminate_all_jobs(self):
         print("Terminating all running jobs...")
-        for process in self.running_processes:
+        for gpu_id, process in enumerate(self.running_processes):
             if process is not None:
                 process.terminate()
+                with open(self.log_files[gpu_id], "a") as log:
+                    log.write(f"\nJob terminated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    log.write("=" * 50 + "\n\n")
         print("All jobs terminated.")
 
 
