@@ -27,13 +27,22 @@ class GPUJobQueue:
         self.queue_lock = threading.Lock()
 
         # Intialize completed jobs with empty list
+<<<<<<< HEAD
         with open(self.completed_file, "w") as f:
             json.dump([], f, indent=4)
+=======
+        with open(self.completed_file, 'w') as f:
+                json.dump([], f, indent=4)
+>>>>>>> 775e305 (Iterate tasks first.)
 
     def _save_queue(self):
         with self.queue_lock:
             try:
+<<<<<<< HEAD
                 with open(self.queue_file, "w") as f:
+=======
+                with open(self.queue_file, 'w') as f:
+>>>>>>> 775e305 (Iterate tasks first.)
                     json.dump(list(self.job_queue.queue), f, indent=4)
             except Exception as e:
                 print(f"Error saving queue to {self.queue_file}: {str(e)}")
@@ -41,7 +50,11 @@ class GPUJobQueue:
     def _save_completed(self, command):
         with self.queue_lock:
             try:
+<<<<<<< HEAD
                 with open(self.completed_file, "r+") as f:
+=======
+                with open(self.completed_file, 'r+') as f:
+>>>>>>> 775e305 (Iterate tasks first.)
                     completed = json.load(f)
                     completed.append(command)
                     f.seek(0)
@@ -189,9 +202,14 @@ if __name__ == "__main__":
     # Create tasks and add them to the task queue.
     tasks = list(itertools.product(args.tasks, args.cache_sizes, configs))
     print(f"Adding {len(tasks)} tasks into the job queue")
+<<<<<<< HEAD
     for task, cs, config in itertools.product(args.tasks, args.cache_sizes, configs):
         gpu_queue.add_job(
             base_command.format(
+=======
+    for task, cs, config in itertools.product(args.cache_sizes, args.tasks, configs):
+        gpu_queue.add_job(base_command.format(
+>>>>>>> 775e305 (Iterate tasks first.)
                 task=task,
                 chkpt=args.checkpoint_path,
                 config=config,
