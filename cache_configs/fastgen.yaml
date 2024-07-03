@@ -1,0 +1,9 @@
+cache_strategy: "fastgen"
+max_cache_length: [1.0]  # [Fixed] Control compression ratio with min_recovery_frac
+prompt_compression_strategy: "snapkv"  # Won't be used. Fastgen profiles attn and inserts directly.
+recent_window: 10  # Local window to consider for local strategies
+history_window_size: 400  # How many past steps to consider for attention importance calculation
+drop_amount: 0  # How frequently to calculate which tokens to evict (0 means we recalculate every step)
+attn_thresholding: False  # Whether to threshold attention scores or record raw probabilities
+min_recovery_frac: 0.85  # Higher is less compression (0.85 means we choose the policy which compresses the most tokens AND recovers 85% of the full attention matrix)
+heavy_hitter_frac: 0.3  # Higher is less compression for the heavy hitter strategy

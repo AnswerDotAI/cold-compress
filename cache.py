@@ -214,7 +214,7 @@ class KVCache(ABC, nn.Module):
         """
         # Final token isn't passed to cache so must -1 from seq_len
         n = seq_len - 1
-        return ((n - min(self.cache_cts, self.max_cache_length)) / n).mean()
+        return ((n - torch.clamp_max(self.cache_cts, self.max_cache_length)) / n).mean()
 
     def return_kv_cache(self):
         # Truncate the cache based on number of insertions. It will be at the end since we prefill in-order.
@@ -651,10 +651,11 @@ class KVCacheScissorhands(KVCacheWindow):
         self.attn_history_num.zero_()
         self.attn_history_denom.zero_()
         self.attn_counter.zero_()
-        self.eviction_queue.zero_()
-        # Start with an "empty queue" so that we can fill it up
-        self.eviction_idx.fill_(self.drop_amount)
-        assert self.queue_len() == 0
+        if hasattr(self, "eviction_queue"):
+            self.eviction_queue.zero_()
+            # Start with an "empty queue" so that we can fill it up
+            self.eviction_idx.fill_(self.drop_amount)
+            assert self.queue_len() == 0
 
     def queue_len(self):
         return self.drop_amount - self.eviction_idx
@@ -778,6 +779,7 @@ class KVCacheFastGen(KVCacheScissorhands):
         **kwargs,
     ):
         self.global_tokens = 0  # No global tokens for FastGen
+        self.attn_record_freq = 1  # We record attention every step for FastGen
         super().__init__(
             max_batch_size,
             n_heads,
@@ -1071,6 +1073,9 @@ class KVCacheFastGen(KVCacheScissorhands):
         self.cache_strategies, special_mask, punc_mask, mask_optimal, cum_attn = (
             self.profile_attn_heads(input_pos, input_ids, attn)
         )
+
+        # Show which strategies are selected
+        print([self.strategies[i] for i in self.cache_strategies.tolist()])
 
         # If none of the heads selected a heavy hitter strategy, we don't need to track attention weights
         self.requires_heavy_check = any(

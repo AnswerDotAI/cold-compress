@@ -201,7 +201,19 @@ class TokenizersWrapper(TokenizerInterface):
         ]
 
     def special_ids(self) -> List[List[int]]:
-        return [[x] for x in self.tokenizer.special_token_ids]
+        if hasattr(self.tokenizer, "special_token_ids"):
+            return [[x] for x in self.tokenizer.special_token_ids]
+
+        # Its likely a tokenizer that has a special_tokens_map attribute
+        special_tokens_ = list(self.tokenizer.special_tokens_map.values())
+        special_tokens = []
+        for t in special_tokens_:
+            if type(t) == list:
+                special_tokens.extend(t)
+            else:
+                special_tokens.append(t)
+        special_tokens = list(set(special_tokens))
+        return [[self.tokenizer.convert_tokens_to_ids(t)] for t in special_tokens]
 
     def encode(self, text):
         return self.tokenizer.encode(text, add_special_tokens=False)

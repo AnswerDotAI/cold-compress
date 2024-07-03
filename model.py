@@ -205,12 +205,14 @@ class Transformer(nn.Module):
     def get_cache_stats(self, prompt_len, gen_len):
         stats = {}
         final_seq_len = prompt_len + gen_len
+        crs = []
         for layer_idx, layer in enumerate(self.layers):
-            stats[f"compression_ratio_{layer_idx}"] = (
-                layer.attention.kv_cache.compression_ratio(
-                    seq_len=torch.tensor(final_seq_len)
-                ).item()
-            )
+            cr = layer.attention.kv_cache.compression_ratio(
+                seq_len=torch.tensor(final_seq_len)
+            ).item()
+            stats[f"compression_ratio_{layer_idx}"] = cr
+            crs.append(cr)
+        stats["compression_ratio_avg"] = sum(crs) / len(crs)
         return stats
 
     def min_cache_length(self):

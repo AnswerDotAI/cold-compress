@@ -30,6 +30,7 @@ from eval import add_eval_args, setup, merge_cache_config, main as eval_main
 
 HPARAMS = {
     "max_cache_length": [[8192], [4096], [2048], [1024], [512], [256], [128]],
+    "min_recovery_frac": [0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
 }
 
 
