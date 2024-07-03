@@ -1,2 +1,3 @@
 cache_strategy: "random"
+prompt_compression_strategy: "random"
 global_tokens: 4
