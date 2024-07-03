@@ -192,6 +192,7 @@ def setup_caches(
     max_seq_length: int,
     cache_kwargs: dict = None,
 ):
+    cache_kwargs["max_seq_length"] = max_seq_length
     # Normalize max_cache_length to absolute cache length if provided as a fraction of the max seq sequence length
     cache_kwargs["max_cache_length"] = list(
         map(

@@ -1,3 +1,4 @@
+import regex as re
 from abc import ABC, abstractmethod
 from typing import Tuple, Callable
 
@@ -19,10 +20,14 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         help="Cache size per layer. If len < n layers, the values are tiled. Must have len divisible by n layers. \
         If 0 < x <= 1, it is percent of |prompt| + max new tokens. Otherwise, if > 1, its the maximum size.",
     )
+    strategies = ["full", "random", "window", "scissor", "l2", "fastgen"]
+    debug_strategies = [f"debug_{strategy}" for strategy in strategies]
+    strategies.extend(debug_strategies)
+
     group.add_argument(
         "--cache_strategy",
         default="full",
-        choices=["full", "random", "window", "scissor", "l2"],
+        choices=strategies,
     )
 
     # Dealing with Long Prompts
@@ -126,7 +131,7 @@ def create_window_attention_mask(seq_len, window_size, device):
 class KVCache(ABC, nn.Module):
     # Define which hyperparameters are relevant for the cache.
     # Override as needed for sub-classes.
-    relevant_kwargs = ["max_cache_length", "global_tokens"]
+    relevant_kwargs = ["max_cache_length", "max_seq_length", "global_tokens"]
 
     def __init__(
         self,
@@ -208,6 +213,17 @@ class KVCache(ABC, nn.Module):
         """
         return False
 
+    def compute_statistics(self, seq_len):
+        """
+        Computes statistics about the cache.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: The cache size, the number of tokens inserted, and the compression ratio.
+        """
+        return {
+            "compression_ratio": self.compression_ratio(seq_len).item(),
+        }
+
     def compression_ratio(self, seq_len):
         """
         Returns the compression ratio of the cache.
@@ -275,6 +291,24 @@ class KVCache(ABC, nn.Module):
         )
         # Yet we return the un-compressed KV since during pre-fill we compute full causal attention.
         return k_val, v_val, mask, new_callback
+
+    def attn_history_callback(self) -> Callable | None:
+        """
+        Returns a callback to update the attention history.
+
+        Returns None if attention is not needed
+        """
+        return (
+            {
+                "func": lambda input_pos,
+                input_ids,
+                k_val,
+                v_val,
+                attn: self.update_attn_history(attn)
+            }
+            if self.return_attn()
+            else None
+        )
 
     def update(self, input_pos, k_val, v_val, input_ids=None):
         """
@@ -424,7 +458,7 @@ class KVCache(ABC, nn.Module):
         ), "This cache does not have global tokens so we cannot mark them."
         # Give self.pos an highest possible position value for global tokens so that they are not replaced
         num_to_mark = min(self.global_tokens, num_total_insertions)
-        self.pos[:, :, :num_to_mark] = self.max_cache_length
+        self.pos[:, :, :num_to_mark] = self.max_seq_length
         return num_to_mark == self.global_tokens
 
 
@@ -448,6 +482,7 @@ class KVCacheFull(KVCache):
 class KVCacheRandom(KVCache):
     relevant_kwargs = [
         "max_cache_length",
+        "max_seq_length",
         "global_tokens",
         "prompt_compression_strategy",
     ]
@@ -475,6 +510,7 @@ class KVCacheRandom(KVCache):
 class KVCacheWindow(KVCache):
     relevant_kwargs = [
         "max_cache_length",
+        "max_seq_length",
         "global_tokens",
         "prompt_compression_strategy",
         # NB: "recent_window" is ignored as a relevant kwarg. It is fixed to self.max_cache_length - self.global_tokens.
@@ -520,6 +556,7 @@ class KVCacheWindow(KVCache):
 class KVCacheL2(KVCacheWindow):
     relevant_kwargs = [
         "max_cache_length",
+        "max_seq_length",
         "global_tokens",
         "recent_window",
         "prompt_compression_strategy",
@@ -569,6 +606,7 @@ class KVCacheL2(KVCacheWindow):
 class KVCacheScissorhands(KVCacheWindow):
     relevant_kwargs = [
         "max_cache_length",
+        "max_seq_length",
         "global_tokens",
         "history_window_size",
         "drop_amount",
@@ -752,6 +790,7 @@ class KVCacheScissorhands(KVCacheWindow):
 class KVCacheFastGen(KVCacheScissorhands):
     relevant_kwargs = [
         "max_cache_length",
+        "max_seq_length",
         "history_window_size",
         "recent_window",
         "attn_thresholding",
@@ -1116,18 +1155,147 @@ class KVCacheFastGen(KVCacheScissorhands):
             self.update_attn_history(cum_attn)
 
 
+class KVCacheAnalysis(KVCache):
+    relevant_kwargs = [
+        "max_cache_length",
+        "history_window_size",
+        "recent_window",
+        "attn_thresholding",
+        "token_ids",
+        "prompt_compression_strategy",
+        "min_recovery_frac",
+        "heavy_hitter_frac",
+        "global_tokens",
+        "drop_amount",
+        "prompt_compression_strategy",
+        "attn_record_freq",
+        "max_seq_length",
+    ]
+
+    def __init__(
+        self,
+        max_batch_size,
+        n_heads,
+        head_dim,
+        dtype=torch.bfloat16,
+        cache_strategy="scissor",
+        **kwargs,
+    ):
+        # Never any prompt compression for full cache
+        full_kwargs = {
+            "prompt_compression_strategy": None,
+            "global_tokens": 0,
+            "max_cache_length": kwargs["max_seq_length"],
+            "max_seq_length": kwargs["max_seq_length"],
+        }
+        super().__init__(
+            max_batch_size, n_heads, head_dim, dtype, head_specific=False, **full_kwargs
+        )
+
+        # Initialize the compressed cache we want to analyze.
+        self.compressed = get_cache_constructor(cache_strategy=cache_strategy)[0](
+            max_batch_size,
+            n_heads,
+            head_dim,
+            dtype,
+            **kwargs,
+        )
+
+        self.register_buffer(
+            "attention_losses",
+            torch.full((self.max_seq_length,), fill_value=-1, dtype=dtype),
+        )
+
+    def return_attn(self):
+        return self.compressed.return_attn()
+
+    def update(self, input_pos, k_val, v_val, input_ids=None):
+        k, v, mask, _ = super().update(input_pos, k_val, v_val, input_ids=input_ids)
+        _, _, _, attn_callback = self.compressed.update(
+            input_pos, k_val, v_val, input_ids=input_ids
+        )
+
+        if attn_callback is not None and input_pos.shape[-1] == 1:
+            # This is ugly but we need to re-write callback to call this class's update_attn_history not the compressed
+            # This is because we need to filter the attention weights to only the tokens in the compressed cache first.
+            attn_callback = self.attn_history_callback()
+            assert attn_callback is not None
+
+        return k, v, mask, attn_callback
+
+    def _update(self, input_pos, k_val, v_val, input_ids=None):
+        # input_pos: [S], k_val: [B, H, S, D]
+        self.fill_contiguous(input_pos, k_val, v_val)
+        return input_pos.shape[-1]
+
+    def reset(self):
+        super().reset()
+        self.compressed.reset()
+        self.attention_losses.fill_(-1)
+
+    def update_attn_history(self, attn: torch.Tensor):
+        indices = self.compressed.pos.clone().long()
+
+        # Global tokens will have been set to max seq length
+        # We need to set them back to actual global tokens
+        indices[:, :, : self.compressed.global_tokens] = (
+            torch.arange(self.compressed.global_tokens, device=indices.device)
+            .view(1, 1, -1)
+            .expand(1, indices.shape[1], -1)
+        )
+        indices = indices[:, :, : min(indices.shape[-1], attn.shape[-1])]
+        attn_compressed = attn.squeeze(2).gather(2, indices).unsqueeze(2)
+        self.compressed.update_attn_history(attn_compressed)
+
+        attn_loss = (1 - attn_compressed.sum(dim=-1)).mean()
+        insert_idx = torch.where(self.attention_losses == -1)[0][0]
+        self.attention_losses[insert_idx] = attn_loss
+
+    def compute_statistics(self, seq_len):
+        """
+        Computes statistics about the cache.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: The cache size, the number of tokens inserted, and the compression ratio.
+        """
+        stats = super().compute_statistics(seq_len)
+        cutoff = torch.where(self.attention_losses == -1)[0]
+        if len(cutoff) > 0:
+            cutoff = cutoff[0]
+        else:
+            cutoff = len(self.attention_losses)
+        stats["attention_loss"] = (self.attention_losses[:cutoff].sum() / cutoff).item()
+        return stats
+
+
 def get_cache_constructor(cache_strategy):
+    relevant_kwargs = None
     if cache_strategy == "full":
-        return KVCacheFull
+        cls = KVCacheFull
     elif cache_strategy == "l2":
-        return KVCacheL2
+        cls = KVCacheL2
     elif cache_strategy == "random":
-        return KVCacheRandom
+        cls = KVCacheRandom
     elif cache_strategy == "window":
-        return KVCacheWindow
+        cls = KVCacheWindow
     elif cache_strategy == "scissor":
-        return KVCacheScissorhands
+        cls = KVCacheScissorhands
     elif cache_strategy == "fastgen":
-        return KVCacheFastGen
+        cls = KVCacheFastGen
+    elif cache_strategy.startswith("debug"):
+        cache_strategy = re.sub(r"debug_+", "", cache_strategy).strip()
+        relevant_kwargs = get_cache_constructor(cache_strategy)[1]
+        cls = (
+            lambda max_batch_size, n_heads, head_dim, dtype, **kwargs: KVCacheAnalysis(
+                max_batch_size,
+                n_heads,
+                head_dim,
+                dtype,
+                cache_strategy=cache_strategy,
+                **kwargs,
+            )
+        )
     else:
         raise ValueError(f"Invalid cache strategy: {cache_strategy}")
+
+    return cls, relevant_kwargs or cls.relevant_kwargs

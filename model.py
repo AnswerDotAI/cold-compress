@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 from dataclasses import dataclass
+from collections import defaultdict
 from typing import Optional
 
 import torch
@@ -176,12 +177,14 @@ class Transformer(nn.Module):
         elif hasattr(self.output, "scales_and_zeros"):
             dtype = self.output.scales_and_zeros.dtype
         for layer_idx, b in enumerate(self.layers):
-            cache_constructor = get_cache_constructor(cache_strategy=cache_strategy)
+            cache_constructor, relevant_kwargs = get_cache_constructor(
+                cache_strategy=cache_strategy
+            )
             # Only pass in the kwargs we need for the cache we chose (useful especially for debugging)
             layerwise_keys = {"max_cache_length", "drop_amount"}
             layer_kwargs = {
                 k: kwargs[k][layer_idx] if k in layerwise_keys else kwargs[k]
-                for k in cache_constructor.relevant_kwargs
+                for k in relevant_kwargs
             }
             b.attention.kv_cache = cache_constructor(
                 self.max_batch_size,
@@ -205,14 +208,18 @@ class Transformer(nn.Module):
     def get_cache_stats(self, prompt_len, gen_len):
         stats = {}
         final_seq_len = prompt_len + gen_len
-        crs = []
+        avgs = defaultdict(list)
         for layer_idx, layer in enumerate(self.layers):
-            cr = layer.attention.kv_cache.compression_ratio(
+            stat = layer.attention.kv_cache.compute_statistics(
                 seq_len=torch.tensor(final_seq_len)
-            ).item()
-            stats[f"compression_ratio_{layer_idx}"] = cr
-            crs.append(cr)
-        stats["compression_ratio_avg"] = sum(crs) / len(crs)
+            )
+            for k, v in stat.items():
+                stats[f"{k}_{layer_idx}"] = v
+                avgs[k].append(v)
+
+        for k, v in avgs.items():
+            stats[f"{k}_avg"] = sum(v) / len(v)
+
         return stats
 
     def min_cache_length(self):

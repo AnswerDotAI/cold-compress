@@ -8,6 +8,7 @@ import time
 import yaml
 import argparse
 import json
+import regex as re
 import contextlib
 import shutil
 import pandas as pd
@@ -52,7 +53,16 @@ from task import TASK_MAPPING, AutoTask
 
 
 def args_to_str(args):
-    RELEVANT_CACHE_KWARGS = get_cache_constructor(args.cache_strategy).relevant_kwargs
+    if "debug" in args.cache_strategy:
+        debug_suffix = "__debug"
+        cache_strategy = re.sub(r"debug_+", "", args.cache_strategy).strip()
+        RELEVANT_CACHE_KWARGS = get_cache_constructor(
+            args.cache_strategy.replace("debug_", "")
+        )[1]
+    else:
+        cache_strategy = args.cache_strategy
+        debug_suffix = ""
+    RELEVANT_CACHE_KWARGS = get_cache_constructor(cache_strategy)[1]
 
     def process_num(n):
         # Return integer floats as "1" not 1.0
@@ -61,16 +71,19 @@ def args_to_str(args):
             return int(n)
         return n
 
-    return "__".join(
-        sorted(
-            [
-                f"{k}=" + ",".join([str(process_num(m)) for m in v])
-                if type(v) == list
-                else f"{k}={process_num(v)}"
-                for k, v in vars(args).items()
-                if k in RELEVANT_CACHE_KWARGS
-            ]
+    return (
+        "__".join(
+            sorted(
+                [
+                    f"{k}=" + ",".join([str(process_num(m)) for m in v])
+                    if type(v) == list
+                    else f"{k}={process_num(v)}"
+                    for k, v in vars(args).items()
+                    if k in RELEVANT_CACHE_KWARGS
+                ]
+            )
         )
+        + debug_suffix
     )
 
 
