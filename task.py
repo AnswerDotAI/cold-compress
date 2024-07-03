@@ -175,7 +175,6 @@ class Squality(EvaluationTask):
             "BertScore": AutoMetric.from_name("bertscore"),
             "Rouge": AutoMetric.from_name("rouge"),
             "LLM-Rouge": AutoMetric.from_name("llm-rouge"),
-            "LLM-Judge": AutoMetric.from_name("llm-as-a-judge"),
         }
 
     def prepare_row(self, row: dict):
@@ -290,7 +289,6 @@ IMPORTANT:
             "BertScore": AutoMetric.from_name("bertscore"),
             "Rouge": AutoMetric.from_name("rouge"),
             "LLM-Rouge": AutoMetric.from_name("llm-rouge"),
-            "LLM-Judge": AutoMetric.from_name("llm-as-a-judge"),
         }
 
     def prepare_row(self, row: dict):
@@ -340,7 +338,6 @@ class QMSum(EvaluationTask):
             "BertScore": AutoMetric.from_name("bertscore"),
             "Rouge": AutoMetric.from_name("rouge"),
             "LLM-Rouge": AutoMetric.from_name("llm-rouge"),
-            "LLM-Judge": AutoMetric.from_name("llm-as-a-judge"),
         }
 
     def prepare_row(self, row: dict):
@@ -383,7 +380,6 @@ IMPORTANT: You should only use the infomation provided in the paragraphs to answ
             "BertScore": AutoMetric.from_name("bertscore"),
             "Rouge": AutoMetric.from_name("rouge"),
             "LLM-Rouge": AutoMetric.from_name("llm-rouge"),
-            "LLM-Judge": AutoMetric.from_name("llm-as-a-judge"),
         }
 
     def prepare_row(self, row: dict):
