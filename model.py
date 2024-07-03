@@ -181,7 +181,7 @@ class Transformer(nn.Module):
                 cache_strategy=cache_strategy
             )
             # Only pass in the kwargs we need for the cache we chose (useful especially for debugging)
-            layerwise_keys = {"max_cache_length", "drop_amount"}
+            layerwise_keys = {"max_cache_length", "drop_amount", "recent_window"}
             layer_kwargs = {
                 k: kwargs[k][layer_idx] if k in layerwise_keys else kwargs[k]
                 for k in relevant_kwargs

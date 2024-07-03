@@ -200,6 +200,7 @@ def setup_caches(
             cache_kwargs["max_cache_length"],
         )
     )
+
     assert (
         model.config.n_layer % len(cache_kwargs["max_cache_length"]) == 0
     ), f'max_cache_length ({len(cache_kwargs["max_cache_length"])}) must be a factor of {model.config.n_layer} layers.'
@@ -208,6 +209,18 @@ def setup_caches(
     cache_kwargs["max_cache_length"] = [
         item for item in cache_kwargs["max_cache_length"] for _ in range(tile_size)
     ]
+
+    if type(cache_kwargs["recent_window"]) != list:
+        if cache_kwargs["recent_window"] <= 1:
+            cache_kwargs["recent_window"] = [
+                max(1, int(cache_kwargs["recent_window"] * l))
+                for l in cache_kwargs["max_cache_length"]
+            ]
+        else:
+            cache_kwargs["recent_window"] = [
+                max(1, min(cache_kwargs["recent_window"], l))
+                for l in cache_kwargs["max_cache_length"]
+            ]
 
     # Gets called twice when model is wrapped in torch.compile which causes an error without the if statement
     if type(cache_kwargs["drop_amount"]) != list:

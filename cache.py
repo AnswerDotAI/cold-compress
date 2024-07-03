@@ -57,7 +57,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
     group.add_argument(
         "--recent_window",  # NB: for KVCacheWindow, recent_window is implicitly set to self.max_cache_length - self.global_tokens.
         default=10,  # 10 is default specified in ScissorHands paper ("r" in Algorithm 2).
-        type=int,
+        type=float,  # If < 1, it is a fraction of max_cache_length.
         help="The number of recently generated tokens to always spare from eviction.",
     )
 
@@ -848,14 +848,10 @@ class KVCacheFastGen(KVCacheScissorhands):
         kv_mask_shape = (max_batch_size, n_heads, 1, self.max_cache_length)
         self.register_buffer("mask", torch.zeros(kv_mask_shape, dtype=torch.bool))
 
-        self.epsilon = (
-            1e-4  # Max difference between attention probs to be considered equivalent.
-        )
-
         # NB: Kwargs are sdpa attention kwargs, not the kwargs for the "func"
         self.prefill_attn_callback = {
             "func": self.profile_and_update,
-            "kwargs": {"return_attn_logits": True},
+            "kwargs": {"return_attn_logits": False},
         }
 
     def return_attn(self):
@@ -1006,25 +1002,6 @@ class KVCacheFastGen(KVCacheScissorhands):
         punc_ids_mask = torch.isin(input_ids, self.punc_ids)
         return punc_ids_mask
 
-    def compute_remasked_attn(self, attn, masks):
-        """
-        Compute the attention with the masks applied. Mask should be true for tokens we want to keep.
-        """
-        num_masks = masks.shape[0]
-        attn = attn.expand(num_masks, -1, -1, -1)
-        return torch.softmax(attn.masked_fill(~masks, float("-inf")), dim=-1)
-
-    def recovery_percent(self, attn, compressed_attn):
-        assert (
-            attn.shape[-2] == attn.shape[-1]
-        ), "Attention matrix expected to be square for profiling."
-        num_causal = attn.shape[-1] * (attn.shape[-1] + 1) // 2
-        num_padding = num_causal - attn.shape[-1]  # Subtract the trace
-        return (
-            (torch.abs(attn - compressed_attn) < self.epsilon).sum(dim=-1).sum(dim=-1)
-            - num_padding
-        ) / num_causal
-
     def profile_attn_heads(self, input_pos, input_ids, attn):
         input_ids = input_ids.squeeze(0)
         seq_len = input_ids.shape[-1]
@@ -1078,10 +1055,9 @@ class KVCacheFastGen(KVCacheScissorhands):
             ]
         )
 
-        compressed_attns = self.compute_remasked_attn(attn, masks)
-        compressed_scores = self.recovery_percent(
-            compressed_attns, compressed_attns[-1]
-        )
+        attn_rep = attn.expand(masks.shape[0], -1, -1, -1)
+
+        compressed_scores = attn_rep.masked_fill(~masks, 0).sum(dim=-1).mean(dim=-1)
 
         # For each column, return the first row which has cost >= min_recovery_frac
         cache_strategies = (

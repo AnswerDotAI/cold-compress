@@ -7,3 +7,4 @@ drop_amount: 0  # How frequently to calculate which tokens to evict (0 means we 
 attn_thresholding: False  # Whether to threshold attention scores or record raw probabilities
 min_recovery_frac: 0.85  # Higher is less compression (0.85 means we choose the policy which compresses the most tokens AND recovers 85% of the full attention matrix)
 heavy_hitter_frac: 0.3  # Higher is less compression for the heavy hitter strategy
+recent_window: 0.3
