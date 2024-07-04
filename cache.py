@@ -20,7 +20,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         help="Cache size per layer. If len < n layers, the values are tiled. Must have len divisible by n layers. \
         If 0 < x <= 1, it is percent of |prompt| + max new tokens. Otherwise, if > 1, its the maximum size.",
     )
-    strategies = ["full", "random", "window", "scissor", "l2", "fastgen"]
+    strategies = ["full", "random", "window", "scissor", "l2", "fastgen", "gist"]
     debug_strategies = [f"debug_{strategy}" for strategy in strategies]
     strategies.extend(debug_strategies)
 
@@ -105,11 +105,14 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
 
 
 def cache_compatibility(args):
-    if args.cache_strategy == "full":
+    if args.cache_strategy in ("full", "gist"):
         # Full implies no compression, which means --max_cache_length = [1.0] (same size as prompt + max_new_tokens)
         assert all(
             [l == 1.0 for l in args.max_cache_length]
         ), "Full cache strategy only supports max_cache_length=1.0."
+    
+    if args.cache_strategy == "gist":
+        assert "gist" in str(args.checkpoint_path), "You must provide a gist token id for the gist cache."
 
     # Attention-based eviction policies must use an attention-based prompt compressor
     if args.cache_strategy in {"scissor"}:
@@ -461,6 +464,68 @@ class KVCache(ABC, nn.Module):
         self.pos[:, :, :num_to_mark] = self.max_seq_length
         return num_to_mark == self.global_tokens
 
+class KVCacheGist(KVCache):
+    relevant_kwargs = [
+        'gist_token_id',
+        'max_cache_length'
+    ]
+    def __init__(
+        self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
+    ):
+        # Gist does not use additional compression strategies
+        self.prompt_compression_strategy = None
+        self.global_tokens = 0  # No global tokens for gist cache
+
+        self.gist_token_id = kwargs.pop('gist_token_id')
+        super().__init__(
+            max_batch_size, n_heads, head_dim, dtype, head_specific=False, **kwargs
+        )
+        self.prefill_attn_callback = {
+            "func": self.profile_and_update,
+            "kwargs": {},
+        }
+        self.register_buffer(
+            "ids",  # Track ids to keep track of the original ids of each item in cache. required to determine gist mask in case of multi-batch inputs
+            torch.full(
+                (
+                    max_batch_size,
+                    self.max_cache_length,
+                ),
+                -1,
+                dtype=torch.int,
+            ),
+        )
+
+
+    def _update(self, input_pos, k_val, v_val, input_ids=None):
+        # input_pos: [S], k_val: [B, H, S, D], input_ids: [B, S]
+        
+        self.fill_contiguous(input_pos, k_val, v_val)
+        self.ids[:, self.cache_cts[0]:self.cache_cts[0]+input_ids.shape[-1]] = input_ids 
+        return input_pos.shape[-1]
+    
+    def profile_and_update(self, input_pos, input_ids, k_val, v_val, attn):
+        assert self.is_prefill(), "Should only be profiling during prefill stage."
+
+        gist_pos = torch.where(input_ids == self.gist_token_id)[-1].min().cpu().item() # use lowest position of gist token in case of multi batch inputs
+        seq_len = input_pos.shape[-1]
+        input_pos = input_pos[gist_pos:]
+        input_ids = input_ids[:, gist_pos:]
+        k_val = k_val[:, :, gist_pos:, :]
+        v_val = v_val[:, :, gist_pos:, :]
+
+        self.fill_contiguous(input_pos, k_val, v_val)
+        self.ids[:, self.cache_cts[0]:self.cache_cts[0]+input_ids.shape[-1]] = input_ids 
+        self.cache_cts[0] = input_pos.shape[-1]
+    
+    def return_kv_cache(self):
+        k, v, mask = super().return_kv_cache()
+        mask_shape = (k.shape[0], k.shape[1], 1, k.shape[-2])
+        gist_mask = torch.ones(mask_shape, dtype=torch.bool).to(k.device)
+        gist_token_positions = torch.stack(torch.where(self.ids == self.gist_token_id)).T
+        for position in gist_token_positions:
+            gist_mask[position[0], :, :, :position[1]] = False
+        return k, v, gist_mask
 
 class KVCacheFull(KVCache):
     def __init__(
@@ -1258,6 +1323,8 @@ def get_cache_constructor(cache_strategy):
         cls = KVCacheScissorhands
     elif cache_strategy == "fastgen":
         cls = KVCacheFastGen
+    elif cache_strategy == "gist":
+        cls = KVCacheGist
     elif cache_strategy.startswith("debug"):
         cache_strategy = re.sub(r"debug_+", "", cache_strategy).strip()
         relevant_kwargs = get_cache_constructor(cache_strategy)[1]

@@ -104,6 +104,7 @@ def prefill(
     x: torch.Tensor,
     input_pos: torch.Tensor,
     next_token: torch.Tensor = None,
+    gist_token_id: Optional[int] = -1,
     **sampling_kwargs,
 ) -> torch.Tensor:
     # input_pos: [B, S]
@@ -113,6 +114,11 @@ def prefill(
         .unsqueeze(0)
         .to(x.device)
     )
+    if gist_token_id is not None:
+        gist_token_positions = torch.stack(torch.where(x == gist_token_id)).T
+        for position in gist_token_positions:
+            causal_mask[position[0], :, position[1] + 1:, :position[1]] = False
+
     logits = model(x, input_pos, mask=causal_mask)
     return greedy(logits, next_token)
 
@@ -240,6 +246,9 @@ def setup_caches(
             "punctuation": tokenizer.punctuation_ids(),
         }
 
+    if "gist" in cache_kwargs["cache_strategy"]:
+        cache_kwargs["gist_token_id"] = tokenizer.gist_token_id()
+
     with torch.device(device):
         model.setup_caches(max_batch_size=1, **cache_kwargs)
 
@@ -258,6 +267,7 @@ def generate(
     prompt: torch.Tensor,
     max_new_tokens: int,
     terminator_ids: Optional[list] = None,
+    gist_token_id: int = -1,
     feed_long_prompts: bool = False,
     **sampling_kwargs,
 ) -> torch.Tensor:
@@ -295,6 +305,7 @@ def generate(
         prompt.view(1, -1),
         input_pos,
         next_token=None if prefix is None else prefix[0].view(1),
+        gist_token_id=gist_token_id,
         **sampling_kwargs,
     )
     next_token = ret[0].clone()

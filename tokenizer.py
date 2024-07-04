@@ -103,7 +103,13 @@ class SentencePieceWrapper(TokenizerInterface):
             *self.addl_special_ids(),
         ]
 
-    def encode(self, text):
+    def encode(self, prompt):
+        if isinstance(prompt, dict):
+            text = prompt['instruction']
+            if "input" in prompt:
+                text += "\n" + prompt['input']
+        else:
+            text = prompt
         return self.processor.EncodeAsIds(text)
 
     def decode(self, tokens):
@@ -121,8 +127,7 @@ class SentencePieceWrapper(TokenizerInterface):
     def __len__(self):
         return self.processor.get_piece_size()
 
-
-class TiktokenWrapper(TokenizerInterface):
+class Llama3Wrapper(TokenizerInterface):
     """
     Tokenizing and encoding/decoding text using the Tiktoken tokenizer.
     """
@@ -152,7 +157,7 @@ class TiktokenWrapper(TokenizerInterface):
         ] + [
             f"<|reserved_special_token_{i}|>"
             for i in range(5, self.num_reserved_special_tokens - 5)
-        ]
+        ] 
         self.special_tokens = {
             token: num_base_tokens + i for i, token in enumerate(special_tokens)
         }
@@ -168,7 +173,13 @@ class TiktokenWrapper(TokenizerInterface):
         self.terminator_ids = [self._eos_id, self.special_tokens["<|eot_id|>"]]
         self.vocab = [self.model.decode([i]) for i in range(self.model.n_vocab)]
 
-    def encode(self, text):
+    def encode(self, prompt):
+        if isinstance(prompt, dict):
+            text = prompt['instruction']
+            if "input" in prompt:
+                text += "\n" + prompt['input']
+        else:
+            text = prompt
         return self.model.encode(text)
 
     def special_ids(self) -> List[List[int]]:
@@ -189,6 +200,103 @@ class TiktokenWrapper(TokenizerInterface):
 
     def __len__(self):
         return self.model.n_vocab
+
+class Llama3GistWrapper(TokenizerInterface):
+    """
+    Tokenizing and encoding/decoding text using the Tiktoken tokenizer.
+    """
+
+    special_tokens: Dict[str, int]
+
+    num_reserved_special_tokens = 256
+
+    pat_str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"  # noqa: E501
+
+    def __init__(self, model_path, gist_position="instruction_end"):
+        super().__init__(model_path)
+        assert os.path.isfile(model_path), str(model_path)
+        mergeable_ranks = load_tiktoken_bpe(str(model_path))
+        num_base_tokens = len(mergeable_ranks)
+        special_tokens = [
+            "<|begin_of_text|>",
+            "<|end_of_text|>",
+            "<|reserved_special_token_0|>",
+            "<|reserved_special_token_1|>",
+            "<|reserved_special_token_2|>",
+            "<|reserved_special_token_3|>",
+            "<|start_header_id|>",
+            "<|end_header_id|>",
+            "<|reserved_special_token_4|>",
+            "<|eot_id|>",  # end of turn
+        ] + [
+            f"<|reserved_special_token_{i}|>"
+            for i in range(5, self.num_reserved_special_tokens - 5)
+        ] + ["<|gist|>"]
+        self.special_tokens = {
+            token: num_base_tokens + i for i, token in enumerate(special_tokens)
+        }
+        self.model = tiktoken.Encoding(
+            name=Path(model_path).name,
+            pat_str=self.pat_str,
+            mergeable_ranks=mergeable_ranks,
+            special_tokens=self.special_tokens,
+        )
+        # BOS / EOS token IDs
+        self._bos_id: int = self.special_tokens["<|begin_of_text|>"]
+        self._eos_id: int = self.special_tokens["<|end_of_text|>"]
+        self.terminator_ids = [self._eos_id, self.special_tokens["<|eot_id|>"]]
+        self.gist_id = self.special_tokens["<|gist|>"]
+        self.gist_position = gist_position
+        self.prompt_with_input = (
+            "Below is an instruction that describes a task, paired with an input that provides further context. "
+            "Write a response that appropriately completes the request.\n\n"
+            "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:"
+        )
+        self.prompt_without_input = (
+            "Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n"
+            "### Instruction:\n{instruction}\n\n### Response:"
+        )
+        self.vocab = [self.model.decode([i]) for i in range(self.model.n_vocab)]   
+
+    def encode_prompt(self, text):
+        return self.encode(text)
+
+    def encode(self, prompt):
+        if isinstance(prompt, str):
+            prompt = {"instruction": prompt}
+            return self.encode(prompt)
+        prompt_template = self.prompt_with_input if 'input' in prompt else self.prompt_without_input
+        if "input" not in prompt:
+            prompt = prompt_template.format(instruction=prompt['instruction'] + "<|gist|>")
+        elif self.gist_position == "instruction":
+            prompt = prompt_template.format(instruction=prompt["instruction"] + "<|gist|>", input=prompt["input"])
+        elif self.gist_position == "input":
+            prompt = prompt_template.format(instruction=prompt["instruction"], input=prompt["input"] + "<|gist|>")
+        elif self.gist_position == "instruction_and_input":
+            prompt = prompt_template.format(instruction=prompt["instruction"] + "<|gist|>", input=prompt["input"] + "<|gist|>")
+        return self.model.encode(prompt, allowed_special={'<|gist|>'})
+
+    def special_ids(self) -> List[List[int]]:
+        # Some of the chat templates aren't given a singular special token so we return a list of lists
+        return [[x] for x in list(sorted(self.special_tokens.values()))]
+
+    def decode(self, tokens):
+        return self.model.decode(tokens)
+
+    def bos_id(self):
+        return self._bos_id
+
+    def eos_id(self):
+        return self._eos_id
+
+    def get_terminator_ids(self):
+        return self.terminator_ids
+    
+    def gist_token_id(self):
+        return self.gist_id
+    
+    def __len__(self):
+        return len(self.model.n_vocab)
 
 
 class TokenizersWrapper(TokenizerInterface):
@@ -215,8 +323,14 @@ class TokenizersWrapper(TokenizerInterface):
         special_tokens = list(set(special_tokens))
         return [[self.tokenizer.convert_tokens_to_ids(t)] for t in special_tokens]
 
-    def encode(self, text):
-        return self.tokenizer.encode(text, add_special_tokens=False)
+    def encode(self, prompt):
+        if isinstance(prompt, dict):
+            text = prompt['instruction']
+            if "input" in prompt:
+                text += "\n" + prompt['input']
+        else:
+            text = prompt
+        return self.model.encode(text)
 
     def decode(self, tokens):
         return self.tokenizer.decode(tokens)
@@ -245,11 +359,21 @@ def get_tokenizer(tokenizer_model_path, model_name, is_chat=False):
     Returns:
     - TokenizerInterface: An instance of a tokenizer.
     """
-    if "llama-3" in str(model_name).lower():
+    model_name = str(model_name).lower()
+    if "gist" in model_name:
+        if "instruction-only" in model_name:
+            return Llama3GistWrapper(tokenizer_model_path, gist_position="instruction")
+        elif "input-only" in model_name:
+            return Llama3GistWrapper(tokenizer_model_path, gist_position="input")
+        elif "instruction-and-input" in model_name:
+            return Llama3GistWrapper(tokenizer_model_path, gist_position="instruction_and_input")
+        else:
+            raise ValueError(f"Invalid gist model name: {model_name}")
+    if "llama-3" in model_name:
         return (
             Llama3ChatFormat(tokenizer_model_path)
             if is_chat
-            else TiktokenWrapper(tokenizer_model_path)
+            else Llama3Wrapper(tokenizer_model_path)
         )
     elif "llama-2" in str(model_name).lower():
         return (
@@ -273,7 +397,7 @@ class Message(TypedDict):
     content: str
 
 
-class Llama3ChatFormat(TiktokenWrapper):
+class Llama3ChatFormat(Llama3Wrapper):
     def __init__(self, model_path):
         super().__init__(model_path)
 
@@ -285,8 +409,12 @@ class Llama3ChatFormat(TiktokenWrapper):
             *self.encode("\n\n"),
         ]
 
-    def encode_prompt(self, prompt: str):
-        return self.encode_dialog_prompt([{"role": "user", "content": prompt}])
+    def encode_prompt(self, prompt):
+        if isinstance(prompt, dict):
+            text = prompt['instruction']
+            if "input" in prompt:
+                text += "\n" + prompt['input']
+        return self.encode_dialog_prompt([{"role": "user", "content": text}])
 
     def encode_message(self, message: Message) -> List[int]:
         tokens = self.encode_header(message)
@@ -310,7 +438,11 @@ class Llama2ChatFormat(SentencePieceWrapper):
     def __init__(self, model_path):
         super().__init__(model_path)
 
-    def encode_prompt(self, prompt: str):
+    def encode_prompt(self, prompt):
+        if isinstance(prompt, dict):
+            text = prompt['instruction']
+            if "input" in prompt:
+                text += prompt['input']
         ids = [self.bos_id()]
         ids += self.encode(Llama2ChatFormat.B_INST + "\n\n")
         ids += self.encode(prompt + " " + Llama2ChatFormat.E_INST)
@@ -322,6 +454,10 @@ class TokenizersChatFormat(TokenizersWrapper):
         super().__init__(model_path)
 
     def encode_prompt(self, prompt: str):
+        if isinstance(prompt, dict):
+            text = prompt['instruction']
+            if "input" in prompt:
+                text += "\n" + prompt['input']
         messages = [{"role": "user", "content": prompt}]
         return self.encode_dialog_prompt(messages)
 

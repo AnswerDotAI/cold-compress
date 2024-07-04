@@ -6,6 +6,7 @@
 import sys
 import time
 import contextlib
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -84,6 +85,8 @@ def main(
 
     tokenizer = get_tokenizer(tokenizer_path, checkpoint_path, is_chat=is_chat)
 
+    gist_token_id = tokenizer.gist_token_id() if hasattr(tokenizer, "gist_token_id") else None
+
     inputs = [encode(tokenizer, prompt, device=device, is_chat=is_chat)]
 
     terminator_ids = tokenizer.get_terminator_ids()
@@ -124,6 +127,7 @@ def main(
             inputs[0],
             max_new_tokens=max_new_tokens,
             terminator_ids=terminator_ids,
+            gist_token_id=gist_token_id,
             feed_long_prompts=feed_long_prompts,
         )
     print(f"Compilation time: {time.perf_counter() - t0:.2f} seconds")
@@ -159,8 +163,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prompt",
         type=str,
-        default="long_prompt_short_output.txt",
-        help="Input prompt. If it ends in .txt, we will load the prompt from the ./prompts dir.",
+        default="long_prompt_short_output.json",
+        help="Input prompt. If it ends in .json, we will load the prompt from the ./prompts dir.",
     )
     parser.add_argument(
         "--max_new_tokens", type=int, default=512, help="Maximum number of new tokens."
@@ -171,10 +175,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.prompt.endswith(".txt"):
+    if args.prompt.endswith(".json"):
         prompt_fn = Path(__file__).resolve().parent / "prompts" / args.prompt
         with open(prompt_fn) as fd:
-            args.prompt = fd.read().strip()
+            args.prompt = json.load(fd)
 
     cache_compatibility(args)
 
@@ -188,3 +192,4 @@ if __name__ == "__main__":
         args.device,
         cache_kwargs=vars(args),
     )
+
