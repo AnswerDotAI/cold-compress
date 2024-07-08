@@ -71,6 +71,9 @@ def args_to_str(args):
             return int(n)
         return n
 
+    if hasattr(args, "attn_top_k") and args.attn_top_k != 1.0:
+        RELEVANT_CACHE_KWARGS.append("attn_top_k")
+
     return (
         "__".join(
             sorted(
@@ -139,6 +142,7 @@ def run_task(
                 input,
                 max_new_tokens=max_new_tokens,
                 terminator_ids=terminator_ids,
+                attn_top_k=args.attn_top_k,
                 feed_long_prompts=feed_long_prompts,
             )
         if hasattr(prof, "export_chrome_trace"):
@@ -334,7 +338,7 @@ def setup(args) -> Path:
     out_dir = (
         Path(__file__).parent
         / "results"
-        / args.checkpoint_path.parent.stem
+        / args.checkpoint_path.parent.name
         / args.cache_strategy
         / args_to_str(args)
     )

@@ -45,6 +45,7 @@ def main(
     ),
     compile: bool = True,
     feed_long_prompts: bool = False,
+    attn_top_k: float = 1.0,
     profile: Optional[Path] = None,
     device=default_device,
     cache_kwargs: dict = {},
@@ -124,6 +125,7 @@ def main(
             inputs[0],
             max_new_tokens=max_new_tokens,
             terminator_ids=terminator_ids,
+            attn_top_k=attn_top_k,
             feed_long_prompts=feed_long_prompts,
         )
     print(f"Compilation time: {time.perf_counter() - t0:.2f} seconds")
@@ -184,6 +186,7 @@ if __name__ == "__main__":
         args.checkpoint_path,
         args.compile,
         args.feed_long_prompts,
+        args.attn_top_k,
         args.profile,
         args.device,
         cache_kwargs=vars(args),

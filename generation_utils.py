@@ -35,6 +35,13 @@ def add_generation_arguments(parser: argparse.ArgumentParser):
         "--device", type=str, default=default_device, help="Device to use"
     )
 
+    group.add_argument(
+        "--attn_top_k",
+        type=float,
+        default=1.0,
+        help="Fraction of top-K attentions over which to compute values. 1.0 means all V are used regardless of attention weight (QK).",
+    )
+
 
 def compute_max_seq_length(model, prompt_lens, max_new_tokens) -> int:
     max_prompt_length = max(len(prompt_lens[i]) for i in range(len(prompt_lens)))
@@ -122,11 +129,12 @@ def decode_one_token(
     x: torch.Tensor,
     input_pos: torch.Tensor,
     next_token: torch.Tensor = None,
+    attn_top_k: float = 1,
     **sampling_kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     # input_pos: [B, 1]
     assert input_pos.shape[-1] == 1
-    logits = model(x, input_pos)
+    logits = model(x, input_pos, attn_top_k=attn_top_k)
     return greedy(logits, next_token=next_token)
 
 
@@ -136,6 +144,7 @@ def decode_n_tokens(
     input_pos: torch.Tensor,
     num_new_tokens: int,
     terminator_ids: Optional[list] = None,
+    attn_top_k: float = 1,
     prefix: Optional[torch.Tensor] = None,
     **sampling_kwargs,
 ):
@@ -147,7 +156,12 @@ def decode_n_tokens(
             teacher_force = prefix is not None and i < len(prefix)
             next_token = prefix[i].view(1) if teacher_force else None
             next_token, next_prob = decode_one_token(
-                model, cur_token, input_pos, next_token=next_token, **sampling_kwargs
+                model,
+                cur_token,
+                input_pos,
+                next_token=next_token,
+                attn_top_k=attn_top_k,
+                **sampling_kwargs,
             )
 
             new_tokens.append(next_token.clone())
@@ -259,6 +273,7 @@ def generate(
     max_new_tokens: int,
     terminator_ids: Optional[list] = None,
     feed_long_prompts: bool = False,
+    attn_top_k: float = 1,
     **sampling_kwargs,
 ) -> torch.Tensor:
     """
@@ -309,6 +324,7 @@ def generate(
         max_new_tokens - 1,
         terminator_ids=terminator_ids,
         prefix=None if prefix is None else prefix[1:],
+        attn_top_k=attn_top_k,
         **sampling_kwargs,
     )
     if len(generated_tokens) > 0:

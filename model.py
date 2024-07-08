@@ -230,13 +230,14 @@ class Transformer(nn.Module):
         idx: Tensor,
         input_pos: Optional[Tensor] = None,
         mask: Optional[Tensor] = None,
+        attn_top_k: Optional[float] = 1.0,
     ) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
         freqs_cis = self.freqs_cis[input_pos]
         x = self.tok_embeddings(idx)
 
         for i, layer in enumerate(self.layers):
-            x = layer(x, idx, input_pos, freqs_cis, mask)
+            x = layer(x, idx, input_pos, freqs_cis, mask, attn_top_k=attn_top_k)
         x = self.norm(x)
         logits = self.output(x)
         return logits
@@ -261,9 +262,15 @@ class TransformerBlock(nn.Module):
         input_pos: Tensor,
         freqs_cis: Tensor,
         mask: Tensor,
+        attn_top_k: Optional[float] = 1.0,
     ) -> Tensor:
         h = x + self.attention(
-            self.attention_norm(x), input_ids, freqs_cis, mask, input_pos
+            self.attention_norm(x),
+            input_ids,
+            freqs_cis,
+            mask,
+            input_pos,
+            attn_top_k=attn_top_k,
         )
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
@@ -300,6 +307,7 @@ class Attention(nn.Module):
         freqs_cis: Tensor,
         mask: Tensor,
         input_pos: Optional[Tensor] = None,
+        attn_top_k: Optional[float] = 1.0,
     ) -> Tensor:
         bsz, seqlen, _ = x.shape
 
@@ -332,6 +340,7 @@ class Attention(nn.Module):
             v_rep,
             attn_mask=mask if mask is not None else kv_mask,
             dropout_p=0.0,
+            attn_top_k=attn_top_k,
             return_attn=attn_callback and attn_callback["func"] is not None,
             **{} if attn_callback is None else attn_callback.get("kwargs", {}),
         )
