@@ -1219,7 +1219,10 @@ class KVCacheAnalysis(KVCache):
             .view(1, 1, -1)
             .expand(1, indices.shape[1], -1)
         )
-        indices = indices[:, :, : min(indices.shape[-1], attn.shape[-1])]
+        cutoff = min(indices.shape[-1], attn.shape[-1])
+        assert torch.min(indices[:, :, : cutoff]) > -1
+        assert torch.all(torch.eq(indices[:, :, cutoff:], -1))
+        indices = indices[:, :, : cutoff]
         attn_compressed = attn.squeeze(2).gather(2, indices).unsqueeze(2)
         self.compressed.update_attn_history(attn_compressed)
 
