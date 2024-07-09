@@ -13,6 +13,7 @@ import contextlib
 import shutil
 import itertools
 import pandas as pd
+import numpy as np
 from pathlib import Path
 from typing import Optional, List
 from collections import defaultdict
@@ -128,8 +129,11 @@ def run_task(
 
     _, max_seq_length = compute_max_seq_length(model, inputs, task.max_tokens)
 
+    # Estimate median sequence length
+    median_seq_length = np.median([len(i) for i in inputs]) + task.max_tokens/2
+
     task_cache_kwargs = setup_caches(
-        model, tokenizer, device, max_seq_length, cache_kwargs.copy()
+        model, tokenizer, device, median_seq_length, cache_kwargs.copy()
     )
 
     for i in tqdm(range(len(inputs))):
