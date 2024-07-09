@@ -11,6 +11,7 @@ import json
 import regex as re
 import contextlib
 import shutil
+import itertools
 import pandas as pd
 from pathlib import Path
 from typing import Optional, List
@@ -53,16 +54,23 @@ from task import TASK_MAPPING, AutoTask
 
 
 def args_to_str(args):
-    if "debug" in args.cache_strategy:
+    if "debug" in args.cache_strategy[0]:
         debug_suffix = "__debug"
-        cache_strategy = re.sub(r"debug_+", "", args.cache_strategy).strip()
-        RELEVANT_CACHE_KWARGS = get_cache_constructor(
-            args.cache_strategy.replace("debug_", "")
-        )[1]
+        cache_strategy = [
+            re.sub(r"debug_+", "", cs).strip() for cs in args.cache_strategy
+        ]
     else:
         cache_strategy = args.cache_strategy
         debug_suffix = ""
-    RELEVANT_CACHE_KWARGS = get_cache_constructor(cache_strategy)[1]
+    RELEVANT_CACHE_KWARGS = list(
+        sorted(
+            set(
+                itertools.chain(
+                    *[get_cache_constructor(cs)[1] for cs in cache_strategy]
+                )
+            )
+        )
+    )
 
     def process_num(n):
         # Return integer floats as "1" not 1.0
@@ -71,6 +79,7 @@ def args_to_str(args):
             return int(n)
         return n
 
+    RELEVANT_CACHE_KWARGS.append("cache_length_pattern")
     if hasattr(args, "attn_top_k") and args.attn_top_k != 1.0:
         RELEVANT_CACHE_KWARGS.append("attn_top_k")
 
@@ -119,7 +128,9 @@ def run_task(
 
     _, max_seq_length = compute_max_seq_length(model, inputs, task.max_tokens)
 
-    setup_caches(model, tokenizer, device, max_seq_length, cache_kwargs.copy())
+    task_cache_kwargs = setup_caches(
+        model, tokenizer, device, max_seq_length, cache_kwargs.copy()
+    )
 
     for i in tqdm(range(len(inputs))):
         input = inputs[i].to(device)
@@ -203,7 +214,7 @@ def run_task(
                 task_metrics[f"{k}_{kk}"] = vv
         else:
             task_metrics[k] = v
-    return task_metrics, pred_df
+    return task_metrics, pred_df, task_cache_kwargs
 
 
 def main(
@@ -289,13 +300,14 @@ def main(
     for task_name, task in eval_tasks.items():
         print(f"Running task {task_name} ...")
         task_out_fn = out_dir / f"{task_name}_metrics.json"
+        task_args_out_fn = out_dir / f"{task_name}_args.json"
         pred_out_fn = out_dir / f"{task_name}_predictions.csv"
         if task_out_fn.exists() and not cache_kwargs["overwrite"]:
             print(f"Task {task_name} already evaluated. Skipping.")
             with open(task_out_fn, "r") as fd:
                 task_metrics[task_name] = json.load(fd)
         else:
-            task_metrics[task_name], predictions = run_task(
+            task_metrics[task_name], predictions, task_args = run_task(
                 args,
                 task,
                 model,
@@ -318,7 +330,16 @@ def main(
 
             with open(task_out_fn, "w") as fd:
                 print(f"Saving results for {task_name} to {task_out_fn}")
-                json.dump(task_metrics[task_name], fd, indent=2)
+                json.dump(task_metrics[task_name], fd, indent=4)
+
+            with open(task_args_out_fn, "w") as fd:
+                print(f"Saving dynamic args for {task_name} to {task_args_out_fn}")
+                # Convert Path objects to strings
+                task_args_json = {
+                    k: str(v) if isinstance(v, Path) else v
+                    for k, v in task_args.items()
+                }
+                json.dump(task_args_json, fd, indent=4)
 
         if not args_fn.exists():
             # Only save args once and only save if we've gotten through a full eval and are ready to dump metrics
@@ -328,10 +349,10 @@ def main(
                     k: str(v) if isinstance(v, Path) else v
                     for k, v in cache_kwargs.items()
                 }
-                json.dump(cache_kwargs_json, fd, indent=2)
+                json.dump(cache_kwargs_json, fd, indent=4)
 
     with open(all_out_fn, "w") as fd:
-        json.dump(task_metrics, fd, indent=2)
+        json.dump(task_metrics, fd, indent=4)
 
 
 def setup(args) -> Path:
@@ -339,7 +360,7 @@ def setup(args) -> Path:
         Path(__file__).parent
         / "results"
         / args.checkpoint_path.parent.name
-        / args.cache_strategy
+        / "__".join(args.cache_strategy)
         / args_to_str(args)
     )
 
@@ -366,7 +387,7 @@ def add_eval_args(parser):
         type=str,
         nargs="+",
         default=["truthfulqa"],
-        choices=list(TASK_MAPPING.keys()),
+        choices=list(TASK_MAPPING.keys()) + ["all"],
         help="List of tasks to be evaluated.",
     )
 
@@ -424,6 +445,10 @@ if __name__ == "__main__":
     add_cache_arguments(parser)
 
     args = merge_cache_config(parser.parse_args())
+
+    if args.tasks[0] == "all":
+        args.tasks = list(TASK_MAPPING.keys())
+        print(f"Running all tasks: {', '.join(args.tasks)}")
 
     out_dir = setup(args)
 

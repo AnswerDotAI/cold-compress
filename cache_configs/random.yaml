@@ -1,2 +1,2 @@
-cache_strategy: "random"
+cache_strategy: ["random"]
 global_tokens: 4

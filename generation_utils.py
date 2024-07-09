@@ -205,15 +205,59 @@ def setup_caches(
     device: torch.device,
     max_seq_length: int,
     cache_kwargs: dict = None,
-):
+) -> dict:
     cache_kwargs["max_seq_length"] = max_seq_length
-    # Normalize max_cache_length to absolute cache length if provided as a fraction of the max seq sequence length
-    cache_kwargs["max_cache_length"] = list(
-        map(
-            lambda l: normalize_cache_length(l, max_seq_length),
-            cache_kwargs["max_cache_length"],
+
+    if cache_kwargs["cache_length_pattern"] != "constant":
+        # Implements https://arxiv.org/abs/2406.02069
+        # Paper finds best beta of 14
+        beta = 14
+        min_allowable = 128  # To avoid the smallest cache size being too small (128 is still quite small)
+        assert (
+            len(cache_kwargs["max_cache_length"]) == 1
+        ), "Only one max_cache_length is supported for patterned cache lengths."
+        total_len = cache_kwargs["max_cache_length"][0] * model.config.n_layer
+        min_cache_length = total_len / (model.config.n_layer * beta)
+        max_cache_length = 2 * total_len / model.config.n_layer
+        diff = (max_cache_length - min_cache_length) / model.config.n_layer
+        cache_lens = [min_cache_length]
+        for l in range(1, model.config.n_layer - 1):
+            cache_lens.append(min_cache_length + diff * l)
+        cache_lens.append(max_cache_length)
+        cache_lens = [
+            normalize_cache_length(int(l), max_seq_length) for l in cache_lens
+        ]
+
+        overflow = 0
+        num_overflow = 0
+        for i in range(len(cache_lens)):
+            if cache_lens[i] < min_allowable:
+                overflow += min_allowable - cache_lens[i]
+                cache_lens[i] = min_allowable
+                num_overflow += 1
+
+        decr_amount = overflow // (len(cache_lens) - num_overflow)
+        for i in range(len(cache_lens)):
+            if cache_lens[i] > min_allowable:
+                # This will change the overall cache length slightly if min_allowable threshold is hit but should be very minor
+                cache_lens[i] = max(min_allowable, cache_lens[i] - decr_amount)
+
+        if cache_kwargs["cache_length_pattern"] == "pyramid":
+            cache_lens = cache_lens[::-1]
+        else:
+            assert (
+                cache_kwargs["cache_length_pattern"] == "funnel"
+            ), "cache_length_pattern must be one of 'constant', 'pyramid', or 'funnel'."
+
+        cache_kwargs["max_cache_length"] = cache_lens
+    else:
+        # Normalize max_cache_length to absolute cache length if provided as a fraction of the max seq sequence length
+        cache_kwargs["max_cache_length"] = list(
+            map(
+                lambda l: normalize_cache_length(l, max_seq_length),
+                cache_kwargs["max_cache_length"],
+            )
         )
-    )
 
     assert (
         model.config.n_layer % len(cache_kwargs["max_cache_length"]) == 0
@@ -222,6 +266,19 @@ def setup_caches(
     tile_size = model.config.n_layer // len(cache_kwargs["max_cache_length"])
     cache_kwargs["max_cache_length"] = [
         item for item in cache_kwargs["max_cache_length"] for _ in range(tile_size)
+    ]
+
+    tile_size = model.config.n_layer // len(cache_kwargs["cache_strategy"])
+    assert len(cache_kwargs["cache_strategy"]) == len(
+        cache_kwargs["prompt_compression_strategy"]
+    ), "You must specify a prompt_compression_strategy for each cache_strategy."
+    cache_kwargs["cache_strategy"] = [
+        item for item in cache_kwargs["cache_strategy"] for _ in range(tile_size)
+    ]
+    cache_kwargs["prompt_compression_strategy"] = [
+        item
+        for item in cache_kwargs["prompt_compression_strategy"]
+        for _ in range(tile_size)
     ]
 
     if type(cache_kwargs["recent_window"]) != list:
@@ -247,7 +304,7 @@ def setup_caches(
         cache_kwargs["max_cache_length"]
     ), "Global tokens must be less than max_cache_length."
 
-    if cache_kwargs["cache_strategy"] == "fastgen":
+    if cache_kwargs["cache_strategy"][0] == "fastgen":
         # We need to pass the special and punctuation token ids to the cache via cache_kwargs
         cache_kwargs["token_ids"] = {
             "special": tokenizer.special_ids(),
@@ -256,6 +313,8 @@ def setup_caches(
 
     with torch.device(device):
         model.setup_caches(max_batch_size=1, **cache_kwargs)
+
+    return cache_kwargs
 
 
 def reset_caches(model: Transformer):

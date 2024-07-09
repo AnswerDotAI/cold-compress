@@ -1,4 +1,4 @@
-cache_strategy: "l2"
-prompt_compression_strategy: "l2"
+cache_strategy: ["l2"]
+prompt_compression_strategy: ["l2"]
 global_tokens: 4
 recent_window: 10

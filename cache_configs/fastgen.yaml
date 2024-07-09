@@ -1,6 +1,6 @@
-cache_strategy: "fastgen"
+cache_strategy: ["fastgen"]
 max_cache_length: [1.0]  # [Fixed] Control compression ratio with min_recovery_frac
-prompt_compression_strategy: "snapkv"  # Won't be used. Fastgen profiles attn and inserts directly.
+prompt_compression_strategy: ["snapkv"]  # Won't be used. Fastgen profiles attn and inserts directly.
 recent_window: 10  # Local window to consider for local strategies
 history_window_size: 400  # How many past steps to consider for attention importance calculation
 drop_amount: 0  # How frequently to calculate which tokens to evict (0 means we recalculate every step)

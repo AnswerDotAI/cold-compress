@@ -20,13 +20,22 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         help="Cache size per layer. If len < n layers, the values are tiled. Must have len divisible by n layers. \
         If 0 < x <= 1, it is percent of |prompt| + max new tokens. Otherwise, if > 1, its the maximum size.",
     )
+
+    # ScissorHands (https://arxiv.org/abs/2305.17118) recommends smaller caches at higher levels --> pyramid
+    group.add_argument(
+        "--cache_length_pattern",
+        default="constant",
+        choices=["constant", "funnel", "pyramid"],
+    )
+
     strategies = ["full", "random", "window", "scissor", "l2", "fastgen"]
     debug_strategies = [f"debug_{strategy}" for strategy in strategies]
     strategies.extend(debug_strategies)
 
     group.add_argument(
         "--cache_strategy",
-        default="full",
+        default=["full"],
+        nargs="+",
         choices=strategies,
     )
 
@@ -39,7 +48,8 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
     )
     group.add_argument(
         "--prompt_compression_strategy",  # This doesn't matter if args.feed_long_prompts is True
-        default="recent_global",
+        default=["recent_global"],
+        nargs="+",
         choices=["recent_global", "snapkv", "l2", "random"],
         help="If |prompt| exceeds max_cache_length, we need to specify a strategy for compressing it to max_cache_length.",
     )
@@ -105,17 +115,17 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
 
 
 def cache_compatibility(args):
-    if args.cache_strategy == "full":
-        # Full implies no compression, which means --max_cache_length = [1.0] (same size as prompt + max_new_tokens)
-        assert all(
-            [l == 1.0 for l in args.max_cache_length]
-        ), "Full cache strategy only supports max_cache_length=1.0."
-
-    # Attention-based eviction policies must use an attention-based prompt compressor
-    if args.cache_strategy in {"scissor"}:
-        assert (
-            args.prompt_compression_strategy == "snapkv"
-        ), 'Scissor requires "snapkv" prompt compression strategy'
+    for length, cache_strat, prompt_strat in zip(
+        args.max_cache_length, args.cache_strategy, args.prompt_compression_strategy
+    ):
+        if cache_strat == "full":
+            assert (
+                length == 1.0
+            ), "Full cache strategy only supports max_cache_length=1.0."
+        if cache_strat == "scissor":
+            assert (
+                prompt_strat == "snapkv"
+            ), f'Scissor requires "snapkv" prompt compression strategy, not {prompt_strat}'
 
     print("The cache argument values you provided appear compatible with each other!")
 
@@ -1192,7 +1202,7 @@ class KVCacheAnalysis(KVCache):
         )
 
         if attn_callback is not None and input_pos.shape[-1] == 1:
-            # This is ugly but we need to re-write callback to call this class's update_attn_history not the compressed
+            # This is hairy but we need to re-write callback to call this class's update_attn_history not the compressed
             # This is because we need to filter the attention weights to only the tokens in the compressed cache first.
             attn_callback = self.attn_history_callback()
             assert attn_callback is not None
