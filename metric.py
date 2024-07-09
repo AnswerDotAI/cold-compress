@@ -1,9 +1,11 @@
 import os
+import time
 
 import numpy as np
 import regex as re
 from claudette import Chat, models
 from evaluate import load
+from anthropic import RateLimitError
 import regex as re
 
 
@@ -137,11 +139,12 @@ PREFILL = "The score (1-5) is:"
 
 
 class LLMRouge(Metric):
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, num_retries=5, **kwargs) -> None:
         assert (
             "ANTHROPIC_API_KEY" in os.environ
         ), "Please set the ANTHROPIC_API_KEY environment variable."
         super().__init__(**kwargs)
+        self.num_retries = num_retries
 
     def _load_metric(self, **kwargs):
         name = kwargs.get("name", "haiku")
@@ -163,12 +166,30 @@ class LLMRouge(Metric):
             prompt = REFERENCE_TEMPLATE.format(labels="\n---\n".join(ls), prediction=p)
             # Clear conversation history
             self.chat.h = []
-            score = (
-                self.chat(prompt, prefill=PREFILL)
-                .content[0]
-                .text[len(PREFILL) :]
-                .strip()
-            )
+            try:
+                score = (
+                    self.chat(prompt, prefill=PREFILL)
+                    .content[0]
+                    .text[len(PREFILL) :]
+                    .strip()
+                )
+            except RateLimitError:
+                retries = 0
+                while retries < self.num_retries:
+                    time.sleep(10)
+                    try:
+                        score = (
+                            self.chat(prompt, prefill=PREFILL)
+                            .content[0]
+                            .text[len(PREFILL) :]
+                            .strip()
+                        )
+                        break
+                    except RateLimitError:
+                        retries += 1
+                if retries == self.num_retries:
+                    raise RateLimitError("Exceeded maximum number of retries.")
+
             score = self.parse_int(score)
             scores.append(score)
         return {"llm_rouge": sum(scores) / len(scores)}
