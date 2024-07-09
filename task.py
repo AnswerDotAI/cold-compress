@@ -33,7 +33,7 @@ class EvaluationTask(ABC):
         self.model_max_length = model_max_length
         self.tokenizer = tokenizer
         self.hf_args = hf_args
-        self.num_samples = kwargs.pop("num_samples", None)
+        self.num_samples = kwargs.pop("num_samples", -1)
 
         # Download the dataset
         self._download()
@@ -70,7 +70,7 @@ class EvaluationTask(ABC):
                 f"Filtered {len(split_data) - len(filtered_data)} examples from split {split}"
             )
 
-            if self.num_samples is not None and len(filtered_data) > self.num_samples:
+            if self.num_samples > 0 and len(filtered_data) > self.num_samples:
                 n = min(self.num_samples, len(filtered_data))
                 print(f"Randomly sample {n} examples")
                 # Use a fixed seed for reproducibility
