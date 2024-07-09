@@ -147,7 +147,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--cache_sizes",
-        type=int,
+        type=float,
         nargs="+",
         default=[8192, 4096, 2048, 1024, 512, 256, 128],
         help="Cache sizes to be evaluated.",
@@ -155,7 +155,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_samples",
         type=int,
-        default=None,
+        default=-1,
         help="Number of examples to sample for evaluation. Defaults to None, which uses the full dataset.",
     )
     parser.add_argument(
