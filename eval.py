@@ -127,7 +127,18 @@ def run_task(
         for prompt in tqdm(prompts, desc="Encoding Prompts")
     ]
 
-    _, max_seq_length = compute_max_seq_length(model, inputs, task.max_tokens)
+    if task.requires_perplexity:
+        assert (
+            len(test["labels"][0]) == 1
+        ), "Only one label supported for perplexity tasks"
+        label_ids = [
+            encode(tokenizer, label[0], device="cpu", is_chat=False, bos=False)
+            for label in tqdm(test["labels"], desc="Encoding Labels")
+        ]
+        _, max_seq_length = compute_max_seq_length(model, inputs, label_ids, 0)
+    else:
+        label_ids = None
+        _, max_seq_length = compute_max_seq_length(model, inputs, None, task.max_tokens)
 
     # Estimate median sequence length
     median_seq_length = np.median([len(i) for i in inputs]) + task.max_tokens/2
@@ -138,8 +149,9 @@ def run_task(
 
     for i in tqdm(range(len(inputs))):
         input = inputs[i].to(device)
+        # If
+        next_tokens = None if label_ids is None else label_ids[i].to(device)
         prompt_length = input.size(0)
-
         max_new_tokens = min(task.max_tokens, max_seq_length - prompt_length)
         assert max_new_tokens > 0, f"Prompt too long for model: {prompt_length}"
 
@@ -156,10 +168,25 @@ def run_task(
                 model,
                 input,
                 max_new_tokens=max_new_tokens,
-                terminator_ids=terminator_ids,
+                next_tokens=next_tokens,
+                terminator_ids=terminator_ids if next_tokens is None else None,
                 attn_top_k=args.attn_top_k,
                 feed_long_prompts=feed_long_prompts,
             )
+
+        if next_tokens is not None:
+            nll = -torch.tensor(
+                [
+                    torch.log(probs[j][next_tokens[j]])
+                    for j in range(next_tokens.size(0))
+                ]
+            )
+            for k in range(500, len(nll), 500):
+                aggregate_metrics[f"ppl@{k}"].append(
+                    float(torch.exp(torch.mean(nll[:k])).item())
+                )
+            aggregate_metrics["ppl"].append(float(torch.exp(torch.mean(nll)).item()))
+
         if hasattr(prof, "export_chrome_trace"):
             if use_tp:
                 prof.export_chrome_trace(f"{profile}_rank_{rank}.json")
@@ -207,6 +234,8 @@ def run_task(
 
     if task.requires_logits:
         metrics = task.test_metrics(all_probs)
+    elif task.requires_perplexity:
+        pass
     else:
         metrics = task.test_metrics(predictions)
 

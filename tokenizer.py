@@ -339,11 +339,11 @@ def encode_tokens(tokenizer, string, bos=True, device=default_device):
     return torch.tensor(tokens, dtype=torch.int, device=device)
 
 
-def encode(tokenizer, prompt, device=default_device, is_chat=True):
+def encode(tokenizer, prompt, device=default_device, bos=True, is_chat=True):
     if is_chat:
         tokens = tokenizer.encode_prompt(prompt)
         encoded = torch.tensor(tokens, dtype=torch.int, device=device)
     else:
-        encoded = encode_tokens(tokenizer, prompt, device=device, bos=True)
+        encoded = encode_tokens(tokenizer, prompt, device=device, bos=bos)
 
     return encoded

@@ -43,8 +43,11 @@ def add_generation_arguments(parser: argparse.ArgumentParser):
     )
 
 
-def compute_max_seq_length(model, prompt_lens, max_new_tokens) -> int:
-    max_prompt_length = max(len(prompt_lens[i]) for i in range(len(prompt_lens)))
+def compute_max_seq_length(model, prompt_lens, target_lens, max_new_tokens) -> int:
+    max_prompt_length = max(
+        len(prompt_lens[i] + 0 if target_lens is None else target_lens[i])
+        for i in range(len(prompt_lens))
+    )
     max_seq_length = max_prompt_length + max_new_tokens
     if max_seq_length > model.config.block_size:
         print(
@@ -330,6 +333,7 @@ def generate(
     model: Transformer,
     prompt: torch.Tensor,
     max_new_tokens: int,
+    next_tokens: Optional[torch.Tensor] = None,
     terminator_ids: Optional[list] = None,
     feed_long_prompts: bool = False,
     attn_top_k: float = 1,
@@ -364,11 +368,21 @@ def generate(
     seq[:prompt_length] = prompt
     input_pos = torch.arange(0, prompt_length, device=device)
 
+    if next_tokens is not None:  # We are in teacher forcing mode for Perplexity task
+        max_new_tokens = len(next_tokens)
+        next_token = next_tokens[0].view(1)
+        prefix = next_tokens[1:]
+    elif prefix is not None:  # We are in partial teacher forcing due to a long prompt
+        next_token = prefix[0].view(1)
+        prefix = prefix[1:]
+    else:
+        next_token = prefix = None  # We are in normal generation mode
+
     ret = prefill(
         model,
         prompt.view(1, -1),
         input_pos,
-        next_token=None if prefix is None else prefix[0].view(1),
+        next_token=next_token,
         **sampling_kwargs,
     )
     next_token = ret[0].clone()
@@ -382,7 +396,7 @@ def generate(
         input_pos,
         max_new_tokens - 1,
         terminator_ids=terminator_ids,
-        prefix=None if prefix is None else prefix[1:],
+        prefix=prefix,
         attn_top_k=attn_top_k,
         **sampling_kwargs,
     )

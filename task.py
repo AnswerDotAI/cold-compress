@@ -17,6 +17,7 @@ class EvaluationTask(ABC):
     test_split: str = "test"
     mandatory_cols = ["context", "question", "prompt", "labels"]
     requires_logits = False
+    requires_perplexity = False
 
     def __init__(
         self,
@@ -557,6 +558,51 @@ class RulerQA(EvaluationTask):
         }
 
 
+class PG19(EvaluationTask):
+    """
+    Generating the first ~8k tokens from PG-19 book corpus given the title.
+    """
+
+    DEFAULT_PROMPT_TEMPLATE = """You are given the title of a book and the first few words. Your job is to write it.
+
+====TITLE====
+{title}
+
+====START OF BOOK====
+{story_start}"""
+
+    def __init__(self, prompt_template=DEFAULT_PROMPT_TEMPLATE, **kwargs):
+        super().__init__(
+            prompt_template, max_tokens=8192, hf_args=["emozilla/pg19-test"], **kwargs
+        )
+        self.train_split = None
+        self.validation_split = None
+        self.story_snippet_size = 256
+        self.requires_perplexity = True
+
+    def truncate(self, text: str):
+        # Don't tokenize the whole book
+        # Wp's ~1.5:1 wrt text tokens (Can re-write to be more exact with wp tokenizer if needed)
+        text = " ".join(text.split(" ")[: int(self.max_tokens // 1.5)])
+        return text
+
+    def prepare_row(self, row: dict):
+        story = self.truncate(row["text"])
+        toks = story.split(" ")
+        story_start, story_end = (
+            " ".join(toks[: self.story_snippet_size]),
+            " ".join(toks[self.story_snippet_size :]),
+        )
+        title = row["short_book_title"]
+        prompt = self.prompt_template.format(title=title, story_start=story_start)
+        return {
+            "context": story_start,
+            "question": f"How would you write a book with the title: {title}",  # Dummy question - not used in prompt but a required column
+            "prompt": prompt,
+            "labels": [story_end],
+        }
+
+
 class RulerNIAH(EvaluationTask):
     """
     RULER Multi-keys Needle-in-a-haystack (NIAH) task with 8k context length. (context length can be adjusted as needed)
@@ -677,17 +723,18 @@ class RulerCWE(EvaluationTask):
 
 
 TASK_MAPPING = {
-    "squality": Squality,
-    "triviaqa": TriviaQA,
     "dolomites": Dolomites,
-    "qmsum": QMSum,
     "musique": Musique,
-    "truthfulqa": TruthfulQA,
-    "scrollsquality": ScrollsQuality,
+    "pg19": PG19,
+    "qmsum": QMSum,
     "rulerqa": RulerQA,
     "rulerniah": RulerNIAH,
     "rulervt": RulerVT,
     "rulercwe": RulerCWE,
+    "scrollsquality": ScrollsQuality,
+    "squality": Squality,
+    "triviaqa": TriviaQA,
+    "truthfulqa": TruthfulQA,
 }
 
 
