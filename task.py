@@ -722,11 +722,44 @@ class RulerCWE(EvaluationTask):
         }
 
 
+class ReproBench(EvaluationTask):
+    DEFAULT_PROMPT_TEMPLATE = """You will be given python files from a code repository, with the current file being shown last. Your task is to predict the next line of code in the current file.
+NOTE: You should only predict the next line in the current file. Do not produce more than one line, and do not provide any explanation.
+
+====REPOSITORY====
+{repo}"""
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1024, **kwargs
+    ):
+        super().__init__(
+            prompt_template, max_tokens, hf_args=["fladhak/reprobench"], **kwargs
+        )
+
+        self.metrics = {
+            "ExactMatch": AutoMetric.from_name("exact_match"),
+            "Levenshtein": AutoMetric.from_name("levenshtein"),
+        }
+
+    def prepare_row(self, row: dict):
+        repo = row["prompt"]
+        ref = row["ref"]
+
+        prompt = self.prompt_template.format(repo=repo)
+
+        return {
+            "prompt": prompt,
+            "context": None,
+            "labels": ref,
+        }
+
+
 TASK_MAPPING = {
     "dolomites": Dolomites,
     "musique": Musique,
     "pg19": PG19,
     "qmsum": QMSum,
+    "reprobench": ReproBench,
     "rulerqa": RulerQA,
     "rulerniah": RulerNIAH,
     "rulervt": RulerVT,

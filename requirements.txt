@@ -5,8 +5,10 @@ blobfile
 claudette
 datasets
 evaluate
+fuzzywuzzy
 huggingface_hub
 nltk
+python-Levenshtein
 sentencepiece
 rouge-score
 ruff

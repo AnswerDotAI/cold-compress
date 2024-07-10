@@ -141,7 +141,7 @@ def run_task(
         _, max_seq_length = compute_max_seq_length(model, inputs, None, task.max_tokens)
 
     # Estimate median sequence length
-    median_seq_length = np.median([len(i) for i in inputs]) + task.max_tokens/2
+    median_seq_length = np.median([len(i) for i in inputs]) + task.max_tokens / 2
 
     task_cache_kwargs = setup_caches(
         model, tokenizer, device, median_seq_length, cache_kwargs.copy()

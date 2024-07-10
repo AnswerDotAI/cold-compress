@@ -77,6 +77,35 @@ class Accuracy(Metric):
         return self.metric(references, predictions)
 
 
+class ExactMatchScore(Metric):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def _load_metric(self, **kwargs):
+        pass
+
+    def compute(self, prompts, predictions, references):
+        return np.mean(
+            [
+                1 if p.split() == r.split() else 0
+                for p, r in zip(predictions, references)
+            ]
+        )
+
+
+class LevenshteinDistance(Metric):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def _load_metric(self, **kwargs):
+        from fuzzywuzzy import fuzz
+
+        self.metric = fuzz.ratio
+
+    def compute(self, prompts, predictions, references):
+        return np.mean([self.metric(p, r) for p, r in zip(predictions, references)])
+
+
 class RulerStringMatch(Metric):
     """
     Metric used in RULER.
@@ -273,6 +302,8 @@ METRIC_MAPPING = {
     "accuracy": Accuracy,
     "bertscore": BertScore,
     "bleurt": Bleurt,
+    "exact_match": ExactMatchScore,
+    "levenshtein": LevenshteinDistance,
     "llm-rouge": LLMRouge,
     "llm-as-a-judge": LLMJudge,
     "rouge": Rouge,
