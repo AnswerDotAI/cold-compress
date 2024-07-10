@@ -54,6 +54,17 @@ from generation_utils import load_model, generate
 from task import TASK_MAPPING, AutoTask
 
 
+def flatten_dict(in_dict: dict) -> dict:
+    out_dict = {}
+    for k, v in in_dict.items():
+        if type(v) == dict:
+            for kk, vv in v.items():
+                out_dict[f"{k}_{kk}"] = vv
+        else:
+            out_dict[k] = v
+    return out_dict
+
+
 def args_to_str(args):
     if "debug" in args.cache_strategy[0]:
         debug_suffix = "__debug"
@@ -210,20 +221,21 @@ def run_task(
         for k, v in cache_stats.items():
             aggregate_metrics[k].append(v)
 
-        # Decode: remove EoT and prompt
-        end = y.size(0)
-        if y[-1] in terminator_ids:
-            end = -1
-        pred = tokenizer.decode(y[prompt_length:end].tolist())
-
-        if args.debug:
-            print(f"Prediction: {pred}")
-
-        predictions.append(pred)
-        if task.requires_logits:
-            all_probs.append(
-                {k: v for k, v in zip(tokenizer.get_vocab(), probs[0].tolist())}
-            )
+        if (
+            not task.requires_perplexity
+        ):  # Perplexity tasks don't decode from model so don't save predictions
+            # Decode: remove EoT and prompt
+            end = y.size(0)
+            if y[-1] in terminator_ids:
+                end = -1
+            pred = tokenizer.decode(y[prompt_length:end].tolist())
+            if args.debug:
+                print(f"Prediction: {pred}")
+            predictions.append(pred)
+            if task.requires_logits:
+                all_probs.append(
+                    {k: v for k, v in zip(tokenizer.get_vocab(), probs[0].tolist())}
+                )
 
         reset_caches(model)
 
@@ -237,21 +249,13 @@ def run_task(
     for k, v in aggregate_metrics.items():
         task_metrics[k] = sum(v) / len(v)
 
-    if task.requires_logits:
-        metrics = task.test_metrics(all_probs)
-    elif task.requires_perplexity:
-        pass
+    if task.requires_perplexity:
+        pred_df = None
     else:
-        metrics = task.test_metrics(predictions)
+        pred_units = all_probs if task.requires_logits else predictions
+        task_metrics.update(flatten_dict(task.test_metrics(pred_units)))
+        pred_df = pd.DataFrame({"prompt": prompts, "prediction": predictions})
 
-    pred_df = pd.DataFrame({"prompt": prompts, "prediction": predictions})
-
-    for k, v in metrics.items():
-        if type(v) == dict:
-            for kk, vv in v.items():
-                task_metrics[f"{k}_{kk}"] = vv
-        else:
-            task_metrics[k] = v
     return task_metrics, pred_df, task_cache_kwargs
 
 

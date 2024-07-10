@@ -141,7 +141,7 @@ def create_window_attention_mask(seq_len, window_size, device):
 class KVCache(ABC, nn.Module):
     # Define which hyperparameters are relevant for the cache.
     # Override as needed for sub-classes.
-    relevant_kwargs = ["max_cache_length", "max_seq_length", "global_tokens"]
+    relevant_kwargs = ["max_cache_length", "global_tokens"]
 
     def __init__(
         self,
@@ -468,7 +468,7 @@ class KVCache(ABC, nn.Module):
         ), "This cache does not have global tokens so we cannot mark them."
         # Give self.pos an highest possible position value for global tokens so that they are not replaced
         num_to_mark = min(self.global_tokens, num_total_insertions)
-        self.pos[:, :, :num_to_mark] = self.max_seq_length
+        self.pos[:, :, :num_to_mark] = int(1e10)
         return num_to_mark == self.global_tokens
 
 
@@ -492,7 +492,6 @@ class KVCacheFull(KVCache):
 class KVCacheRandom(KVCache):
     relevant_kwargs = [
         "max_cache_length",
-        "max_seq_length",
         "global_tokens",
         "prompt_compression_strategy",
     ]
@@ -520,7 +519,6 @@ class KVCacheRandom(KVCache):
 class KVCacheWindow(KVCache):
     relevant_kwargs = [
         "max_cache_length",
-        "max_seq_length",
         "global_tokens",
         "prompt_compression_strategy",
         # NB: "recent_window" is ignored as a relevant kwarg. It is fixed to self.max_cache_length - self.global_tokens.
@@ -566,7 +564,6 @@ class KVCacheWindow(KVCache):
 class KVCacheL2(KVCacheWindow):
     relevant_kwargs = [
         "max_cache_length",
-        "max_seq_length",
         "global_tokens",
         "recent_window",
         "prompt_compression_strategy",
@@ -616,7 +613,6 @@ class KVCacheL2(KVCacheWindow):
 class KVCacheScissorhands(KVCacheWindow):
     relevant_kwargs = [
         "max_cache_length",
-        "max_seq_length",
         "global_tokens",
         "history_window_size",
         "drop_amount",
@@ -800,7 +796,6 @@ class KVCacheScissorhands(KVCacheWindow):
 class KVCacheFastGen(KVCacheScissorhands):
     relevant_kwargs = [
         "max_cache_length",
-        "max_seq_length",
         "history_window_size",
         "recent_window",
         "attn_thresholding",
@@ -1155,7 +1150,6 @@ class KVCacheAnalysis(KVCache):
         "drop_amount",
         "prompt_compression_strategy",
         "attn_record_freq",
-        "max_seq_length",
     ]
 
     def __init__(
@@ -1171,8 +1165,7 @@ class KVCacheAnalysis(KVCache):
         full_kwargs = {
             "prompt_compression_strategy": None,
             "global_tokens": 0,
-            "max_cache_length": kwargs["max_seq_length"],
-            "max_seq_length": kwargs["max_seq_length"],
+            "max_cache_length": kwargs["max_cache_length"],
         }
         super().__init__(
             max_batch_size, n_heads, head_dim, dtype, head_specific=False, **full_kwargs
@@ -1189,7 +1182,7 @@ class KVCacheAnalysis(KVCache):
 
         self.register_buffer(
             "attention_losses",
-            torch.full((self.max_seq_length,), fill_value=-1, dtype=dtype),
+            torch.full((self.max_cache_length,), fill_value=-1, dtype=dtype),
         )
 
     def return_attn(self):

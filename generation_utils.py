@@ -209,8 +209,6 @@ def setup_caches(
     max_seq_length: int,
     cache_kwargs: dict = None,
 ) -> dict:
-    cache_kwargs["max_seq_length"] = max_seq_length
-
     if cache_kwargs["cache_length_pattern"] != "constant":
         # Implements https://arxiv.org/abs/2406.02069
         # Paper finds best beta of 14
