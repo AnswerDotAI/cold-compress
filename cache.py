@@ -468,7 +468,7 @@ class KVCache(ABC, nn.Module):
         ), "This cache does not have global tokens so we cannot mark them."
         # Give self.pos an highest possible position value for global tokens so that they are not replaced
         num_to_mark = min(self.global_tokens, num_total_insertions)
-        self.pos[:, :, :num_to_mark] = int(1e10)
+        self.pos[:, :, :num_to_mark] = int(1e9)
         return num_to_mark == self.global_tokens
 
 
