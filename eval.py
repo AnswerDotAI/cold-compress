@@ -143,8 +143,14 @@ def run_task(
     # Estimate median sequence length
     median_seq_length = np.median([len(i) for i in inputs]) + task.max_tokens / 2
 
+    target_length = (
+        max_seq_length
+        if cache_kwargs["cache_strategy"][0] == "full"
+        else median_seq_length
+    )
+
     task_cache_kwargs = setup_caches(
-        model, tokenizer, device, median_seq_length, cache_kwargs.copy()
+        model, tokenizer, device, target_length, cache_kwargs.copy()
     )
 
     for i in tqdm(range(len(inputs))):
