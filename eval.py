@@ -141,7 +141,7 @@ def run_task(
         _, max_seq_length = compute_max_seq_length(model, inputs, None, task.max_tokens)
 
     # Estimate median sequence length
-    median_seq_length = np.median([len(i) for i in inputs]) + task.max_tokens / 2
+    median_seq_length = int(np.median([len(i) for i in inputs]) + task.max_tokens / 2)
 
     target_length = (
         max_seq_length
@@ -155,7 +155,6 @@ def run_task(
 
     for i in tqdm(range(len(inputs))):
         input = inputs[i].to(device)
-        # If
         next_tokens = None if label_ids is None else label_ids[i].to(device)
         prompt_length = input.size(0)
         max_new_tokens = min(task.max_tokens, max_seq_length - prompt_length)
