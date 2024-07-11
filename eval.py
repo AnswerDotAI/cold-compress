@@ -119,6 +119,7 @@ def run_task(
     is_chat: bool = False,
     profile: Optional[Path] = None,
     feed_long_prompts=False,
+    decode_first_token=False,
     device=default_device,
     cache_kwargs: dict = {},
     use_tp: bool = False,
@@ -188,6 +189,7 @@ def run_task(
                 terminator_ids=terminator_ids if next_tokens is None else None,
                 attn_top_k=args.attn_top_k,
                 feed_long_prompts=feed_long_prompts,
+                decode_first_token=decode_first_token,
             )
 
         if next_tokens is not None:
@@ -229,12 +231,14 @@ def run_task(
             if y[-1] in terminator_ids:
                 end = -1
             pred = tokenizer.decode(y[prompt_length:end].tolist())
+            
             if args.debug:
                 print(f"Prediction: {pred}")
+
             predictions.append(pred)
             if task.requires_logits:
                 all_probs.append(
-                    {k: v for k, v in zip(tokenizer.get_vocab(), probs[0].tolist())}
+                    {k: v for k, v in zip(tokenizer.get_vocab(), probs[-1].tolist())}
                 )
 
         reset_caches(model)
@@ -269,6 +273,7 @@ def main(
     profile: Optional[Path] = None,
     compile=True,
     feed_long_prompts=False,
+    decode_first_token=False,
     device=default_device,
     cache_kwargs: dict = {},
     out_dir: Path = None,
@@ -357,6 +362,7 @@ def main(
                 is_chat,
                 profile,
                 feed_long_prompts,
+                decode_first_token,
                 device,
                 cache_kwargs,
                 use_tp,
@@ -461,6 +467,13 @@ def add_eval_args(parser):
         help="Name of YAML file in ./cache_configs.",
     )
 
+    parser.add_argument(
+        "--decode_first_token",
+        default=False,
+        action="store_true",
+        help="If True will truncate cache after prefill and then decode the first token.",
+    )
+
 
 def merge_cache_config(args):
     if not args.cache_config:
@@ -502,6 +515,7 @@ if __name__ == "__main__":
         args.profile,
         args.compile,
         args.feed_long_prompts,
+        args.decode_first_token,
         args.device,
         cache_kwargs=vars(args),
         out_dir=out_dir,

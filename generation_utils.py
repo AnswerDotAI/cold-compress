@@ -334,6 +334,7 @@ def generate(
     next_tokens: Optional[torch.Tensor] = None,
     terminator_ids: Optional[list] = None,
     feed_long_prompts: bool = False,
+    decode_first_token: bool = False,
     attn_top_k: float = 1,
     **sampling_kwargs,
 ) -> torch.Tensor:
@@ -360,6 +361,17 @@ def generate(
         prompt, prefix = prompt[:max_prompt_len], prompt[max_prompt_len:]
         max_new_tokens += len(prefix)
         prompt_length = max_prompt_len
+
+    if decode_first_token:
+        prompt, prefix = prompt[:-1], prompt[-1:]
+        max_new_tokens += 1
+        prompt_length -= 1
+
+    # create an empty tensor (all -1) of the expected final shape and fill in the current tokens
+    # GPT-Fast had this as empty but the values of empty are non-deterministic
+    seq = torch.full((prompt_length + max_new_tokens,), -1, dtype=dtype, device=device)
+    seq[:prompt_length] = prompt
+    input_pos = torch.arange(0, prompt_length, device=device)
 
     if next_tokens is not None:  # We are in teacher forcing mode for Perplexity task
         max_new_tokens = len(next_tokens)
