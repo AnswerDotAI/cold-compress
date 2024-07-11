@@ -209,8 +209,6 @@ def setup_caches(
     max_seq_length: int,
     cache_kwargs: dict = None,
 ) -> dict:
-    cache_kwargs["max_seq_length"] = max_seq_length
-
     if cache_kwargs["cache_length_pattern"] != "constant":
         # Implements https://arxiv.org/abs/2406.02069
         # Paper finds best beta of 14
@@ -384,6 +382,12 @@ def generate(
         prefix = prefix[1:]
     else:
         next_token = prefix = None  # We are in normal generation mode
+
+    # create an empty tensor (all -1) of the expected final shape and fill in the current tokens
+    # GPT-Fast had this as empty but the values of empty are non-deterministic
+    seq = torch.full((prompt_length + max_new_tokens,), -1, dtype=dtype, device=device)
+    seq[:prompt_length] = prompt
+    input_pos = torch.arange(0, prompt_length, device=device)
 
     ret = prefill(
         model,

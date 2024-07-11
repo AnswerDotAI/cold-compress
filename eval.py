@@ -54,6 +54,17 @@ from generation_utils import load_model, generate
 from task import TASK_MAPPING, AutoTask
 
 
+def flatten_dict(in_dict: dict) -> dict:
+    out_dict = {}
+    for k, v in in_dict.items():
+        if type(v) == dict:
+            for kk, vv in v.items():
+                out_dict[f"{k}_{kk}"] = vv
+        else:
+            out_dict[k] = v
+    return out_dict
+
+
 def args_to_str(args):
     if "debug" in args.cache_strategy[0]:
         debug_suffix = "__debug"
@@ -142,7 +153,7 @@ def run_task(
         _, max_seq_length = compute_max_seq_length(model, inputs, None, task.max_tokens)
 
     # Estimate median sequence length
-    median_seq_length = np.median([len(i) for i in inputs]) + task.max_tokens / 2
+    median_seq_length = int(np.median([len(i) for i in inputs]) + task.max_tokens / 2)
 
     target_length = (
         max_seq_length
@@ -156,7 +167,6 @@ def run_task(
 
     for i in tqdm(range(len(inputs))):
         input = inputs[i].to(device)
-        # If
         next_tokens = None if label_ids is None else label_ids[i].to(device)
         prompt_length = input.size(0)
         max_new_tokens = min(task.max_tokens, max_seq_length - prompt_length)
@@ -213,20 +223,23 @@ def run_task(
         for k, v in cache_stats.items():
             aggregate_metrics[k].append(v)
 
-        # Decode: remove EoT and prompt
-        end = y.size(0)
-        if y[-1] in terminator_ids:
-            end = -1
-        pred = tokenizer.decode(y[prompt_length:end].tolist())
+        if (
+            not task.requires_perplexity
+        ):  # Perplexity tasks don't decode from model so don't save predictions
+            # Decode: remove EoT and prompt
+            end = y.size(0)
+            if y[-1] in terminator_ids:
+                end = -1
+            pred = tokenizer.decode(y[prompt_length:end].tolist())
+            
+            if args.debug:
+                print(f"Prediction: {pred}")
 
-        if args.debug:
-            print(f"Prediction: {pred}")
-
-        predictions.append(pred)
-        if task.requires_logits:
-            all_probs.append(
-                {k: v for k, v in zip(tokenizer.get_vocab(), probs[-1].tolist())}
-            )
+            predictions.append(pred)
+            if task.requires_logits:
+                all_probs.append(
+                    {k: v for k, v in zip(tokenizer.get_vocab(), probs[-1].tolist())}
+                )
 
         reset_caches(model)
 
@@ -240,21 +253,13 @@ def run_task(
     for k, v in aggregate_metrics.items():
         task_metrics[k] = sum(v) / len(v)
 
-    if task.requires_logits:
-        metrics = task.test_metrics(all_probs)
-    elif task.requires_perplexity:
-        pass
+    if task.requires_perplexity:
+        pred_df = None
     else:
-        metrics = task.test_metrics(predictions)
+        pred_units = all_probs if task.requires_logits else predictions
+        task_metrics.update(flatten_dict(task.test_metrics(pred_units)))
+        pred_df = pd.DataFrame({"prompt": prompts, "prediction": predictions})
 
-    pred_df = pd.DataFrame({"prompt": prompts, "prediction": predictions})
-
-    for k, v in metrics.items():
-        if type(v) == dict:
-            for kk, vv in v.items():
-                task_metrics[f"{k}_{kk}"] = vv
-        else:
-            task_metrics[k] = v
     return task_metrics, pred_df, task_cache_kwargs
 
 
@@ -444,7 +449,7 @@ def add_eval_args(parser):
     parser.add_argument(
         "--num_samples",
         type=int,
-        default=None,
+        default=-1,
         help="Number of examples to sample for evaluation. Defaults to None, which uses the full dataset.",
     )
 

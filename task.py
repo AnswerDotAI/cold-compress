@@ -33,7 +33,7 @@ class EvaluationTask(ABC):
         self.model_max_length = model_max_length
         self.tokenizer = tokenizer
         self.hf_args = hf_args
-        self.num_samples = kwargs.pop("num_samples", None)
+        self.num_samples = kwargs.pop("num_samples", -1)
 
         # Download the dataset
         self._download()
@@ -70,7 +70,7 @@ class EvaluationTask(ABC):
                 f"Filtered {len(split_data) - len(filtered_data)} examples from split {split}"
             )
 
-            if self.num_samples is not None and len(filtered_data) > self.num_samples:
+            if self.num_samples > 0 and len(filtered_data) > self.num_samples:
                 n = min(self.num_samples, len(filtered_data))
                 print(f"Randomly sample {n} examples")
                 # Use a fixed seed for reproducibility
@@ -175,7 +175,6 @@ class Squality(EvaluationTask):
             "BertScore": AutoMetric.from_name("bertscore"),
             "Rouge": AutoMetric.from_name("rouge"),
             "LLM-Rouge": AutoMetric.from_name("llm-rouge"),
-            "LLM-Judge": AutoMetric.from_name("llm-as-a-judge"),
         }
 
     def prepare_row(self, row: dict):
@@ -290,7 +289,6 @@ IMPORTANT:
             "BertScore": AutoMetric.from_name("bertscore"),
             "Rouge": AutoMetric.from_name("rouge"),
             "LLM-Rouge": AutoMetric.from_name("llm-rouge"),
-            "LLM-Judge": AutoMetric.from_name("llm-as-a-judge"),
         }
 
     def prepare_row(self, row: dict):
@@ -340,7 +338,6 @@ class QMSum(EvaluationTask):
             "BertScore": AutoMetric.from_name("bertscore"),
             "Rouge": AutoMetric.from_name("rouge"),
             "LLM-Rouge": AutoMetric.from_name("llm-rouge"),
-            "LLM-Judge": AutoMetric.from_name("llm-as-a-judge"),
         }
 
     def prepare_row(self, row: dict):
@@ -383,7 +380,6 @@ IMPORTANT: You should only use the infomation provided in the paragraphs to answ
             "BertScore": AutoMetric.from_name("bertscore"),
             "Rouge": AutoMetric.from_name("rouge"),
             "LLM-Rouge": AutoMetric.from_name("llm-rouge"),
-            "LLM-Judge": AutoMetric.from_name("llm-as-a-judge"),
         }
 
     def prepare_row(self, row: dict):
