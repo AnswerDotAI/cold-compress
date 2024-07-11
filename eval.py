@@ -443,7 +443,7 @@ def add_eval_args(parser):
     parser.add_argument(
         "--num_samples",
         type=int,
-        default=None,
+        default=-1,
         help="Number of examples to sample for evaluation. Defaults to None, which uses the full dataset.",
     )
 
