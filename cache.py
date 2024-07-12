@@ -1101,8 +1101,8 @@ class KVCacheFastGen(KVCacheScissorhands):
             self.profile_attn_heads(input_pos, input_ids, attn)
         )
 
-        # Show which strategies are selected
-        print([self.strategies[i] for i in self.cache_strategies.tolist()])
+        # Uncomment to show which strategies are selected
+        # print([self.strategies[i] for i in self.cache_strategies.tolist()])
 
         # If none of the heads selected a heavy hitter strategy, we don't need to track attention weights
         self.requires_heavy_check = any(
