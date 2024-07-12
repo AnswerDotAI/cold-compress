@@ -267,11 +267,12 @@ def apply_pyramid_pattern(
             cache_lens[i] = min_allowable
             num_overflow += 1
 
-    decr_amount = overflow // (len(cache_lens) - num_overflow)
-    for i in range(len(cache_lens)):
-        if cache_lens[i] > min_allowable:
-            # This will change the overall cache length slightly if min_allowable threshold is hit but should be very minor
-            cache_lens[i] = max(min_allowable, cache_lens[i] - decr_amount)
+    if num_overflow < len(cache_lens):
+        decr_amount = overflow // (len(cache_lens) - num_overflow)
+        for i in range(len(cache_lens)):
+            if cache_lens[i] > min_allowable:
+                # This will change the overall cache length slightly if min_allowable threshold is hit but should be very minor
+                cache_lens[i] = max(min_allowable, cache_lens[i] - decr_amount)
 
     if decreasing:
         cache_lens = cache_lens[::-1]
