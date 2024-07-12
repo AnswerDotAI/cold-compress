@@ -9,9 +9,11 @@ fuzzywuzzy
 huggingface_hub
 nltk
 python-Levenshtein
-sentencepiece
+regex
 rouge-score
 ruff
+safetensors
 scikit-learn
+sentencepiece
 tiktoken
 git+https://github.com/google-research/bleurt.git

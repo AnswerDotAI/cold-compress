@@ -1,5 +1,6 @@
 import torch
 from abc import ABC, abstractmethod
+from typing import Tuple
 
 
 class PromptCompressor(ABC):
@@ -16,7 +17,9 @@ class PromptCompressor(ABC):
         pass
 
     @abstractmethod
-    def __call__(self, *args: torch.Any, **kwds: torch.Any) -> torch.Any:
+    def __call__(
+        self, *args, **kwargs
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         pass
 
     @abstractmethod

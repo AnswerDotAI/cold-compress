@@ -183,6 +183,42 @@ def model_forward(model, x, input_pos):
     return model(x, input_pos)
 
 
+def apply_pattern(
+    pattern: list[str | int],
+    out_size: int,
+    extension_strategy: str = "tile",
+    max_seq_length: int = None,
+):
+    """
+    Extend a given pattern across n_layers of the model.
+    """
+    assert extension_strategy in {
+        "tile",
+        "repeat",
+        "pyramid",
+        "funnel",
+    }, "extension_strategy must be one of 'tile', 'repeat', 'pyramid', or 'funnel'."
+    assert (
+        out_size % len(pattern) == 0
+    ), f"{len(pattern)} must be a divisible factor of the number of layers ({out_size})."
+    factor = out_size // len(pattern)
+
+    if extension_strategy in {"funnel", "pyramid"}:
+        assert (
+            len(pattern) == 1
+        ), "Funnel and pyramid patterns must have a single element."
+        return apply_pyramid_pattern(
+            pattern[0],
+            max_seq_length,
+            out_size,
+            decreasing=extension_strategy == "pyramid",
+        )
+    elif extension_strategy == "tile":
+        return [item for item in pattern for _ in range(factor)]
+    else:  # Repeat
+        return pattern * factor
+
+
 def normalize_cache_length(
     max_cache_length: float, max_seq_length: int, multiple_of: int = 8
 ) -> int:
@@ -196,10 +232,54 @@ def normalize_cache_length(
         max_cache_length = int(max_cache_length)
         if max_cache_length > max_seq_length:
             print(
-                f"Warning: max_cache_length ({max_cache_length}) is greater than max_seq_length ({max_seq_length}). Setting to {max_seq_length}"
+                f"FYI: max_cache_length ({max_cache_length}) is greater than max_seq_length ({max_seq_length}). Setting to {max_seq_length}"
             )
             max_cache_length = max_seq_length
     return min(find_multiple(max_cache_length, multiple_of), max_seq_length)
+
+
+def apply_pyramid_pattern(
+    max_cache_length: int,
+    max_seq_length: int,
+    model_n_layer: int,
+    decreasing: bool = True,
+    min_cache_length: int = 256,
+):
+    # Implements https://arxiv.org/abs/2406.02069
+    # Paper finds best beta of 14
+    beta = 14
+    min_allowable = min(min_cache_length, max_cache_length)
+    total_len = max_cache_length * model_n_layer
+    min_cache_length = total_len / (model_n_layer * beta)
+    max_cache_length = 2 * total_len / model_n_layer
+    diff = (max_cache_length - min_cache_length) / model_n_layer
+    cache_lens = [min_cache_length]
+    for l in range(1, model_n_layer - 1):
+        cache_lens.append(min_cache_length + diff * l)
+    cache_lens.append(max_cache_length)
+    cache_lens = [normalize_cache_length(int(l), max_seq_length) for l in cache_lens]
+
+    overflow = 0
+    num_overflow = 0
+    for i in range(len(cache_lens)):
+        if cache_lens[i] < min_allowable:
+            overflow += min_allowable - cache_lens[i]
+            cache_lens[i] = min_allowable
+            num_overflow += 1
+
+    decr_amount = overflow // (len(cache_lens) - num_overflow)
+    for i in range(len(cache_lens)):
+        if cache_lens[i] > min_allowable:
+            # This will change the overall cache length slightly if min_allowable threshold is hit but should be very minor
+            cache_lens[i] = max(min_allowable, cache_lens[i] - decr_amount)
+
+    if decreasing:
+        cache_lens = cache_lens[::-1]
+        assert cache_lens[-1] < cache_lens[0], "Cache lengths should be decreasing."
+    else:
+        assert cache_lens[0] < cache_lens[-1], "Cache lengths should be increasing."
+
+    return cache_lens
 
 
 def setup_caches(
@@ -209,78 +289,35 @@ def setup_caches(
     max_seq_length: int,
     cache_kwargs: dict = None,
 ) -> dict:
-    if cache_kwargs["cache_length_pattern"] != "constant":
-        # Implements https://arxiv.org/abs/2406.02069
-        # Paper finds best beta of 14
-        beta = 14
-        min_allowable = 128  # To avoid the smallest cache size being too small (128 is still quite small)
-        assert (
-            len(cache_kwargs["max_cache_length"]) == 1
-        ), "Only one max_cache_length is supported for patterned cache lengths."
-        total_len = cache_kwargs["max_cache_length"][0] * model.config.n_layer
-        min_cache_length = total_len / (model.config.n_layer * beta)
-        max_cache_length = 2 * total_len / model.config.n_layer
-        diff = (max_cache_length - min_cache_length) / model.config.n_layer
-        cache_lens = [min_cache_length]
-        for l in range(1, model.config.n_layer - 1):
-            cache_lens.append(min_cache_length + diff * l)
-        cache_lens.append(max_cache_length)
-        cache_lens = [
-            normalize_cache_length(int(l), max_seq_length) for l in cache_lens
-        ]
-
-        overflow = 0
-        num_overflow = 0
-        for i in range(len(cache_lens)):
-            if cache_lens[i] < min_allowable:
-                overflow += min_allowable - cache_lens[i]
-                cache_lens[i] = min_allowable
-                num_overflow += 1
-
-        decr_amount = overflow // (len(cache_lens) - num_overflow)
-        for i in range(len(cache_lens)):
-            if cache_lens[i] > min_allowable:
-                # This will change the overall cache length slightly if min_allowable threshold is hit but should be very minor
-                cache_lens[i] = max(min_allowable, cache_lens[i] - decr_amount)
-
-        if cache_kwargs["cache_length_pattern"] == "pyramid":
-            cache_lens = cache_lens[::-1]
-        else:
-            assert (
-                cache_kwargs["cache_length_pattern"] == "funnel"
-            ), "cache_length_pattern must be one of 'constant', 'pyramid', or 'funnel'."
-
-        cache_kwargs["max_cache_length"] = cache_lens
-    else:
-        # Normalize max_cache_length to absolute cache length if provided as a fraction of the max seq sequence length
-        cache_kwargs["max_cache_length"] = list(
-            map(
-                lambda l: normalize_cache_length(l, max_seq_length),
-                cache_kwargs["max_cache_length"],
-            )
+    # Normalize max_cache_length to absolute cache length if provided as a fraction of the max seq sequence length
+    cache_kwargs["max_cache_length"] = list(
+        map(
+            lambda l: normalize_cache_length(l, max_seq_length),
+            cache_kwargs["max_cache_length"],
         )
+    )
 
-    assert (
-        model.config.n_layer % len(cache_kwargs["max_cache_length"]) == 0
-    ), f'max_cache_length ({len(cache_kwargs["max_cache_length"])}) must be a factor of {model.config.n_layer} layers.'
+    cache_kwargs["max_cache_length"] = apply_pattern(
+        pattern=cache_kwargs["max_cache_length"],
+        out_size=model.config.n_layer,
+        extension_strategy=cache_kwargs["cache_length_pattern"],
+        max_seq_length=max_seq_length,
+    )
 
-    tile_size = model.config.n_layer // len(cache_kwargs["max_cache_length"])
-    cache_kwargs["max_cache_length"] = [
-        item for item in cache_kwargs["max_cache_length"] for _ in range(tile_size)
-    ]
-
-    tile_size = model.config.n_layer // len(cache_kwargs["cache_strategy"])
     assert len(cache_kwargs["cache_strategy"]) == len(
         cache_kwargs["prompt_compression_strategy"]
     ), "You must specify a prompt_compression_strategy for each cache_strategy."
-    cache_kwargs["cache_strategy"] = [
-        item for item in cache_kwargs["cache_strategy"] for _ in range(tile_size)
-    ]
-    cache_kwargs["prompt_compression_strategy"] = [
-        item
-        for item in cache_kwargs["prompt_compression_strategy"]
-        for _ in range(tile_size)
-    ]
+
+    cache_kwargs["cache_strategy"] = apply_pattern(
+        pattern=cache_kwargs["cache_strategy"],
+        out_size=model.config.n_layer,
+        extension_strategy=cache_kwargs["cache_strategy_pattern"],
+    )
+    cache_kwargs["prompt_compression_strategy"] = apply_pattern(
+        pattern=cache_kwargs["prompt_compression_strategy"],
+        out_size=model.config.n_layer,
+        extension_strategy=cache_kwargs["cache_strategy_pattern"],
+    )
 
     if type(cache_kwargs["recent_window"]) != list:
         if cache_kwargs["recent_window"] <= 1:

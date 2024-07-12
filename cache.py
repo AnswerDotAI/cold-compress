@@ -24,8 +24,8 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
     # ScissorHands (https://arxiv.org/abs/2305.17118) recommends smaller caches at higher levels --> pyramid
     group.add_argument(
         "--cache_length_pattern",
-        default="constant",
-        choices=["constant", "funnel", "pyramid"],
+        default="tile",
+        choices=["tile", "repeat", "funnel", "pyramid"],
     )
 
     strategies = ["full", "random", "window", "scissor", "l2", "fastgen"]
@@ -37,6 +37,13 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         default=["full"],
         nargs="+",
         choices=strategies,
+    )
+
+    group.add_argument(
+        "--cache_strategy_pattern",
+        default="tile",
+        choices=["tile", "repeat"],
+        help="How to apply the cache_strategy across layers.",
     )
 
     # Dealing with Long Prompts

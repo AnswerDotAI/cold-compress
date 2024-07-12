@@ -92,6 +92,7 @@ def args_to_str(args):
         return n
 
     RELEVANT_CACHE_KWARGS.append("cache_length_pattern")
+    RELEVANT_CACHE_KWARGS.append("cache_strategy_pattern")
     if hasattr(args, "attn_top_k") and args.attn_top_k != 1.0:
         RELEVANT_CACHE_KWARGS.append("attn_top_k")
 
@@ -231,7 +232,7 @@ def run_task(
             if y[-1] in terminator_ids:
                 end = -1
             pred = tokenizer.decode(y[prompt_length:end].tolist())
-            
+
             if args.debug:
                 print(f"Prediction: {pred}")
 
