@@ -136,7 +136,7 @@ def run_task(
 
     if len(test) == 0:
         print(
-            f"No test data found for {task.name}. Skipping. Possibly all filtered out by tokenizer for being too long."
+            f"No test data found for {task.__class__.__name__}. Skipping. Possibly all filtered out by tokenizer for being too long."
         )
         return None, None, None
 
