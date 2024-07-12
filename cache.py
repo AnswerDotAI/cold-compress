@@ -949,6 +949,16 @@ class KVCacheFastGen(KVCacheScissorhands):
 
         return fill_idx, eviction_required
 
+    def reset(self):
+        super().reset()
+        self.num_special = 0
+        self.num_punc = 0
+        self.mask.zero_()
+        self.special_mask.zero_()
+        self.punc_mask.zero_()
+        self.cache_strategies = None
+        self.requires_heavy_check = True
+
     def _update(self, input_pos, k_val, v_val, input_ids=None):
         n_heads = k_val.shape[1]
 
@@ -979,7 +989,6 @@ class KVCacheFastGen(KVCacheScissorhands):
                 # We can't use all fill indices to bulk assign mask because some fill_indices are dummies (self.max_cache_length - 1)
                 self.mask[:, head_idx, :, fill_idx] = True
 
-        # Scatter
         self.fill_headwise(fill_indices, input_pos, k_val, v_val)
         self.punc_mask.scatter_(
             2, fill_indices.view(1, -1, 1), is_punc.view(1, 1, 1).expand(1, n_heads, 1)
