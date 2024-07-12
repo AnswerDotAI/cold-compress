@@ -133,6 +133,13 @@ def run_task(
     task_metrics = {}
 
     test = task.get_test()
+
+    if len(test) == 0:
+        print(
+            f"No test data found for {task.name}. Skipping. Possibly all filtered out by tokenizer for being too long."
+        )
+        return None, None, None
+
     prompts = test["prompt"]
 
     inputs = [
@@ -371,7 +378,11 @@ def main(
                 terminator_ids,
             )
 
-            predictions.to_csv(pred_out_fn, index=False)
+            if task_metrics[task_name] is None:
+                continue
+
+            if predictions is not None:
+                predictions.to_csv(pred_out_fn, index=False)
 
             if debug:
                 print(f"Results for {task_name}:")
