@@ -6,7 +6,7 @@ from claudette import models as anthropic_models, Chat
 from datasets import Dataset
 import pandas as pd
 import torch
-from data_utils import BENCHMARKS
+from task import BENCHMARKS
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 

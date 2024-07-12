@@ -158,7 +158,7 @@ def run_task(
 
     target_length = (
         max_seq_length
-        if cache_kwargs["cache_strategy"][0] == "full"
+        if any([x in {"full", "fastgen"} for x in args.cache_strategy])
         else median_seq_length
     )
 
