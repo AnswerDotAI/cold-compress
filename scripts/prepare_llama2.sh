@@ -3,7 +3,7 @@
 set -e
 
 # Use env vars if they exist, otherwise set defaults
-: "${HF:=meta-llama/Meta-Llama-3-8B-Instruct}"
+: "${HF:=meta-llama/Llama-2-7b-chat-hf}"
 
 # Export the variables
 export HF
