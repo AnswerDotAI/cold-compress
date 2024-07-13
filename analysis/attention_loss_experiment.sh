@@ -2,7 +2,8 @@
 
 set -e
 
-export CKPT=/workspace/context-compression/checkpoints/Qwen/Qwen2-1.5B-Instruct/model.pth
+DIR=$(dirname $(dirname "$0"))
+export CKPT=$DIR/checkpoints/Qwen/Qwen2-1.5B-Instruct/model.pth
 RATIOS=(0.25 0.5 0.75)
 
 # For loop over ratios
