@@ -343,7 +343,7 @@ def setup_caches(
         cache_kwargs["max_cache_length"]
     ), "Global tokens must be less than max_cache_length."
 
-    if cache_kwargs["cache_strategy"][0] == "fastgen":
+    if cache_kwargs["cache_strategy"][0] == "hybrid":
         # We need to pass the special and punctuation token ids to the cache via cache_kwargs
         cache_kwargs["token_ids"] = {
             "special": tokenizer.special_ids(),

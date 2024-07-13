@@ -165,7 +165,7 @@ def run_task(
 
     target_length = (
         max_seq_length
-        if any([x in {"full", "fastgen"} for x in args.cache_strategy])
+        if any([x in {"full", "hybrid"} for x in args.cache_strategy])
         else median_seq_length
     )
 
@@ -321,7 +321,7 @@ def main(
 
     tokenizer = get_tokenizer(tokenizer_path, checkpoint_path, is_chat=is_chat)
 
-    if cache_kwargs["cache_strategy"] == "fastgen":
+    if cache_kwargs["cache_strategy"] == "hybrid":
         # We need to pass the special and punctuation token ids to the cache via cache_kwargs
         cache_kwargs["token_ids"] = {
             "special": tokenizer.special_ids(),
