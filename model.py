@@ -145,6 +145,19 @@ transformer_configs = {
         norm_eps=1e-6,
         max_length=32768,
     ),
+    "Qwen2-7B-Instruct": dict(
+        block_size=32768,
+        n_layer=28,
+        n_head=28,
+        n_local_heads=4,
+        dim=3584,
+        intermediate_size=18944,
+        vocab_size=152064,
+        rope_base=1000000,
+        attention_bias=True,
+        norm_eps=1e-6,
+        max_length=32768,
+    ),
 }
 
 

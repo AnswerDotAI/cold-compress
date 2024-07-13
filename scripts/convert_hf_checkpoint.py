@@ -61,7 +61,11 @@ def convert_hf_checkpoint(
 
     # Load the json file containing weight mapping
     if not is_llama3:
-        model_map_json = checkpoint_dir / "pytorch_model.bin.index.json"
+        # Check for index file
+        index_files = list(checkpoint_dir.glob("*.index.json"))
+        assert len(index_files) <= 1, "There should be at most one index file."
+
+        model_map_json = index_files[0]
 
         if model_map_json.is_file():
             # For larger models, the weights are stored in separate files, so we need to load the index.
