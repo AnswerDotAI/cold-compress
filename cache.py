@@ -1319,7 +1319,11 @@ class KVCacheAnalysis(KVCache):
             cutoff = cutoff[0]
         else:
             cutoff = len(self.attention_losses)
-        stats["attention_loss"] = (self.attention_losses[:cutoff].sum() / cutoff).item()
+
+        losses = self.attention_losses[:cutoff]
+        for k in range(500, len(losses), 500):
+            stats[f"attention_loss@{k}"].append(losses[:k].mean().item())
+        stats["attention_loss"] = losses.mean().item()
         return stats
 
 
