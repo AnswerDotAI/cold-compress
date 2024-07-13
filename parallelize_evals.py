@@ -159,6 +159,12 @@ if __name__ == "__main__":
         help="Number of examples to sample for evaluation. Defaults to None, which uses the full dataset.",
     )
     parser.add_argument(
+        "--add_full",
+        default=False,
+        action="store_true",
+        help="Run the full attention model in addition to the compressed models.",
+    )
+    parser.add_argument(
         "--checkpoint_path",
         type=Path,
         default=Path(__file__).resolve().parent
@@ -199,6 +205,18 @@ if __name__ == "__main__":
                 cs=cs,
             )
         )
+
+    if args.add_full:
+        for task in args.tasks:
+            gpu_queue.add_job(
+                base_command.format(
+                    task=task,
+                    chkpt=args.checkpoint_path,
+                    config="full.yaml",
+                    ns=args.num_samples,
+                    cs=1.0,
+                )
+            )
 
     try:
         gpu_queue.process_queue()
