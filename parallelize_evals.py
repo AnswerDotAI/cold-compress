@@ -194,7 +194,6 @@ if __name__ == "__main__":
 
     # Create tasks and add them to the task queue.
     tasks = list(itertools.product(args.tasks, args.cache_sizes, configs))
-    print(f"Adding {len(tasks)} tasks into the job queue")
     for task, cs, config in itertools.product(args.tasks, args.cache_sizes, configs):
         gpu_queue.add_job(
             base_command.format(
@@ -217,6 +216,8 @@ if __name__ == "__main__":
                     cs=1.0,
                 )
             )
+
+    print(f"Adding {gpu_queue.job_queue.qsize()} tasks into the job queue")
 
     try:
         gpu_queue.process_queue()
