@@ -65,11 +65,9 @@ def convert_hf_checkpoint(
         index_files = list(checkpoint_dir.glob("*.index.json"))
         assert len(index_files) <= 1, "There should be at most one index file."
 
-        model_map_json = index_files[0]
-
-        if model_map_json.is_file():
+        if len(index_files) == 1:
             # For larger models, the weights are stored in separate files, so we need to load the index.
-            with open(model_map_json) as json_map:
+            with open(index_files[0]) as json_map:
                 bin_index = json.load(json_map)
             bin_files = {
                 checkpoint_dir / bin for bin in bin_index["weight_map"].values()
