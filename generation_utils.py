@@ -45,9 +45,10 @@ def add_generation_arguments(parser: argparse.ArgumentParser):
 
 def compute_max_seq_length(model, prompt_lens, target_lens, max_new_tokens) -> int:
     max_prompt_length = max(
-        len(prompt_lens[i] + 0 if target_lens is None else target_lens[i])
+        len(prompt_lens[i])
         for i in range(len(prompt_lens))
     )
+    max_new_tokens = max(max_new_tokens, max(len(target_lens[i]) for i in range(len(target_lens))))
     max_seq_length = max_prompt_length + max_new_tokens
     if max_seq_length > model.config.block_size:
         print(
@@ -291,6 +292,7 @@ def setup_caches(
     cache_kwargs: dict = None,
 ) -> dict:
     # Normalize max_cache_length to absolute cache length if provided as a fraction of the max seq sequence length
+    cache_kwargs["max_seq_length"] = max_seq_length
     cache_kwargs["max_cache_length"] = list(
         map(
             lambda l: normalize_cache_length(l, max_seq_length),

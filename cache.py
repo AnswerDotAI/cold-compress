@@ -144,7 +144,7 @@ def create_window_attention_mask(seq_len, window_size, device, global_tokens: in
 class KVCache(ABC, nn.Module):
     # Define which hyperparameters are relevant for the cache.
     # Override as needed for sub-classes.
-    relevant_kwargs = ["max_cache_length", "global_tokens"]
+    relevant_kwargs = ["max_cache_length", "global_tokens", "max_seq_length"]
 
     def __init__(
         self,
@@ -488,6 +488,7 @@ class KVCacheFull(KVCache):
 class KVCacheRandom(KVCache):
     relevant_kwargs = [
         "max_cache_length",
+        "max_seq_length",
         "global_tokens",
         "prompt_compression_strategy",
     ]
@@ -515,6 +516,7 @@ class KVCacheRandom(KVCache):
 class KVCacheWindow(KVCache):
     relevant_kwargs = [
         "max_cache_length",
+        "max_seq_length",
         "global_tokens",
         "prompt_compression_strategy",
         # NB: "recent_window" is ignored as a relevant kwarg. It is fixed to self.max_cache_length - self.global_tokens.
@@ -560,6 +562,7 @@ class KVCacheWindow(KVCache):
 class KVCacheL2(KVCacheWindow):
     relevant_kwargs = [
         "max_cache_length",
+        "max_seq_length",
         "global_tokens",
         "recent_window",
         "prompt_compression_strategy",
@@ -609,6 +612,7 @@ class KVCacheL2(KVCacheWindow):
 class KVCacheScissorhands(KVCacheWindow):
     relevant_kwargs = [
         "max_cache_length",
+        "max_seq_length",
         "global_tokens",
         "history_window_size",
         "drop_amount",
@@ -793,6 +797,7 @@ class KVCacheScissorhands(KVCacheWindow):
 class KVCacheHybrid(KVCacheScissorhands):
     relevant_kwargs = [
         "max_cache_length",
+        "max_seq_length",
         "global_tokens",
         "recent_window",
         "token_ids",
@@ -1243,6 +1248,7 @@ class KVCacheHybrid(KVCacheScissorhands):
 class KVCacheAnalysis(KVCache):
     relevant_kwargs = [
         "max_cache_length",
+        "max_seq_length",
         "history_window_size",
         "recent_window",
         "attn_thresholding",
@@ -1269,7 +1275,7 @@ class KVCacheAnalysis(KVCache):
         full_kwargs = {
             "prompt_compression_strategy": None,
             "global_tokens": 0,
-            "max_cache_length": kwargs["max_cache_length"],
+            "max_cache_length": kwargs["max_seq_length"],
         }
         super().__init__(
             max_batch_size, n_heads, head_dim, dtype, head_specific=False, **full_kwargs
@@ -1353,7 +1359,7 @@ class KVCacheAnalysis(KVCache):
 
         losses = self.attention_losses[:cutoff]
         for k in range(500, len(losses), 500):
-            stats[f"attention_loss@{k}"].append(losses[:k].mean().item())
+            stats[f"attention_loss@{k}"] = losses[:k].mean().item()
         stats["attention_loss"] = losses.mean().item()
         return stats
 

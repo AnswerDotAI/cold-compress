@@ -165,7 +165,7 @@ def run_task(
 
     target_length = (
         max_seq_length
-        if any([x in {"full", "hybrid"} for x in args.cache_strategy])
+        if any([x in {"full", "hybrid"} or "debug" in x for x in args.cache_strategy])
         else median_seq_length
     )
 
