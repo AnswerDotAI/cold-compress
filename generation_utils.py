@@ -43,12 +43,17 @@ def add_generation_arguments(parser: argparse.ArgumentParser):
     )
 
 
-def compute_max_seq_length(model, prompt_lens, target_lens, max_new_tokens) -> int:
-    max_prompt_length = max(
-        len(prompt_lens[i])
-        for i in range(len(prompt_lens))
+def compute_max_seq_length(
+    model, prompt_lens: list[int], target_lens: list[int], max_new_tokens: int
+) -> int:
+    max_prompt_length = max(len(prompt_lens[i]) for i in range(len(prompt_lens)))
+    # Should either pass target_lens or max_new_tokens
+    max_target_lens = (
+        0
+        if target_lens is None
+        else max(len(target_lens[i]) for i in range(len(target_lens)))
     )
-    max_new_tokens = max(max_new_tokens, max(len(target_lens[i]) for i in range(len(target_lens))))
+    max_new_tokens = max(max_new_tokens, max_target_lens)
     max_seq_length = max_prompt_length + max_new_tokens
     if max_seq_length > model.config.block_size:
         print(
