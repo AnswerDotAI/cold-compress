@@ -16,7 +16,7 @@ MAX_CACHE_LENGTHS=(0.1 0.25 0.5)
 
 for MAX_CACHE_LENGTH in $MAX_CACHE_LENGTHS
 do
-    echo $LOCAL_RATIO
+    echo "Starting experiments with Max Cache Length=${MAX_CACHE_LENGTH}."
     python eval.py $SHARED_ARGS --max_cache_length $MAX_CACHE_LENGTH --cache_length_pattern pyramid
     python eval.py $SHARED_ARGS --max_cache_length $MAX_CACHE_LENGTH --cache_length_pattern repeat
     python eval.py $SHARED_ARGS --max_cache_length $MAX_CACHE_LENGTH --cache_length_pattern tile
