@@ -1,10 +1,14 @@
 cache_strategy: ["hybrid"]
 max_cache_length: [1.0]  # [Fixed] Control compression ratio with min_recovery_frac
 global_tokens: 4
-recent_window: 0.05  # Fraction of recent tokens to keep
 # min_recovery_frac: 0.85  # Higher is less compression (0.85 means we choose the policy which compresses the most tokens AND recovers 85% of the full attention matrix)
 hybrid_strategies:
-  - "window"
-  - "window_low_heavy_hitter"
-  - "window_high_heavy_hitter"
-  - "full"
+  - strategy: "window"
+    recent_window: 0.1  # Fraction of recent tokens to keep
+  - strategy: "window_heavy_hitter"
+    heavy_hitter_frac: 0.25  # Fraction of important tokens to keep
+    recent_window: 0.1  # Fraction of recent tokens to keep
+  - strategy: "window_heavy_hitter"
+    heavy_hitter_frac: 0.5 # Fraction of important tokens to keep
+    recent_window: 0.1  # Fraction of recent tokens to keep
+  - strategy: "full"

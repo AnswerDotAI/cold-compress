@@ -7,6 +7,7 @@ import torch._dynamo.config
 import torch._inductor.config
 
 import argparse
+import yaml
 from model import Transformer, find_multiple
 from tokenizer import TokenizerInterface
 
@@ -41,6 +42,21 @@ def add_generation_arguments(parser: argparse.ArgumentParser):
         default=1.0,
         help="Fraction of top-K attentions over which to compute values. 1.0 means all V are used regardless of attention weight (QK).",
     )
+
+
+def merge_cache_config(args):
+    if not args.cache_config:
+        return args
+    # Get parent directory of current file
+    if not args.cache_config.endswith(".yaml"):
+        args.cache_config = args.cache_config + ".yaml"
+    yaml_fn = Path(__file__).parent / "cache_configs" / args.cache_config
+    assert yaml_fn.exists(), f"Cache config file {yaml_fn} does not exist."
+    with open(yaml_fn, "r") as f:
+        cache_kwargs = yaml.safe_load(f)
+        # Over-write args with cache_kwargs
+        args = argparse.Namespace(**{**vars(args), **cache_kwargs})
+    return args
 
 
 def compute_max_seq_length(

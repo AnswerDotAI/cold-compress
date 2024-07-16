@@ -5,7 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 import sys
 import time
-import yaml
 import argparse
 import json
 import regex as re
@@ -32,6 +31,7 @@ from generation_utils import (
     decode_one_token,
     device_sync,
     get_cache_stats,
+    merge_cache_config,
     prefill,
     reset_caches,
     setup_caches,
@@ -96,6 +96,14 @@ def args_to_str(args):
     if hasattr(args, "attn_top_k") and args.attn_top_k != 1.0:
         RELEVANT_CACHE_KWARGS.append("attn_top_k")
 
+    args_dict = vars(args).copy()
+
+    # Hybrid Strategies will be too long to save in a file name so just need to pick the strategy
+    if "hybrid_strategies" in args_dict:
+        args_dict["hybrid_strategies"] = [
+            x["strategy"] for x in args_dict["hybrid_strategies"]
+        ]
+
     return (
         "__".join(
             sorted(
@@ -103,7 +111,7 @@ def args_to_str(args):
                     f"{k}=" + ",".join([str(process_num(m)) for m in v])
                     if type(v) == list
                     else f"{k}={process_num(v)}"
-                    for k, v in vars(args).items()
+                    for k, v in args_dict.items()
                     if k in RELEVANT_CACHE_KWARGS
                 ]
             )
@@ -485,21 +493,6 @@ def add_eval_args(parser):
         action="store_true",
         help="If True will truncate cache after prefill and then decode the first token.",
     )
-
-
-def merge_cache_config(args):
-    if not args.cache_config:
-        return args
-    # Get parent directory of current file
-    if not args.cache_config.endswith(".yaml"):
-        args.cache_config = args.cache_config + ".yaml"
-    yaml_fn = Path(__file__).parent / "cache_configs" / args.cache_config
-    assert yaml_fn.exists(), f"Cache config file {yaml_fn} does not exist."
-    with open(yaml_fn, "r") as f:
-        cache_kwargs = yaml.safe_load(f)
-        # Over-write args with cache_kwargs
-        args = argparse.Namespace(**{**vars(args), **cache_kwargs})
-    return args
 
 
 if __name__ == "__main__":

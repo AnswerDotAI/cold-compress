@@ -670,7 +670,9 @@ class KVCacheScissorhands(KVCacheWindow):
 
         self.register_buffer("attn_counter", torch.zeros((), dtype=torch.int64))
 
-        assert self.recent_window >= self.attn_record_freq, (
+        assert (
+            self.attn_record_freq == 1 or self.recent_window >= self.attn_record_freq
+        ), (
             f"Since recent window ({self.recent_window}) < attention record frequency ({self.attn_record_freq}), you will get nan scores when "
             "deciding which tokens to evict because >0 non-local tokens will have no attention history."
         )
@@ -799,26 +801,10 @@ class KVCacheHybrid(KVCacheScissorhands):
         "max_cache_length",
         "max_seq_length",
         "global_tokens",
-        "recent_window",
         "token_ids",
         "min_recovery_frac",
         "hybrid_strategies",
     ]
-
-    # From FastGen
-    DEFAULT_HYBRID_STRATEGIES = [
-        "special",
-        "special_punc",
-        "special_punc_heavy",
-        "special_punc_heavy_local",
-        "full",
-    ]
-
-    HYBRID_KWARGS = {
-        "window": {},  # Just use recent_window kwarg
-        "window_low_heavy_hitter": {"heavy_hitter_frac": 0.25},
-        "window_high_heavy_hitter": {"heavy_hitter_frac": 0.5},
-    }
 
     def __init__(
         self,
@@ -833,6 +819,9 @@ class KVCacheHybrid(KVCacheScissorhands):
         self.attn_thresholding = False
         self.history_window_size = 400  # Default value for ScissorHands
         self.prompt_compression_strategy = None
+        self.recent_window = (
+            None  # Dummy value: Recent windows are defined per attention head
+        )
         super().__init__(
             max_batch_size,
             n_heads,
@@ -844,27 +833,38 @@ class KVCacheHybrid(KVCacheScissorhands):
             **kwargs,
         )
 
-        special_ids = [torch.tensor(ids) for ids in kwargs["token_ids"]["special"]]
-        self.register_buffer("special_ids", torch.nested.nested_tensor(special_ids))
-
-        # Store the punctuation vocabulary ids
-        punc_ids = torch.Tensor(kwargs["token_ids"]["punctuation"])
-        self.register_buffer("punc_ids", punc_ids)
-        # As well as a mask showing where punctuation ids are in the KV cache
-        # We store this to avoid re-computing the mask every time and having to store input_ids
-
+        self.requires_special = any(
+            ["special" in strat["strategy"] for strat in self.hybrid_strategies]
+        )
         mask_shape = (max_batch_size, n_heads, self.max_cache_length)
-        self.register_buffer("special_mask", torch.zeros(mask_shape, dtype=torch.bool))
-        self.register_buffer("punc_mask", torch.zeros(mask_shape, dtype=torch.bool))
+        if self.requires_special:
+            special_ids = [torch.tensor(ids) for ids in kwargs["token_ids"]["special"]]
+            self.register_buffer("special_ids", torch.nested.nested_tensor(special_ids))
+            # As well as a mask showing where special ids are in the KV cache
+            # We store this to avoid re-computing the mask every time and having to store all input_ids
+            self.register_buffer(
+                "special_mask", torch.zeros(mask_shape, dtype=torch.bool)
+            )
+
+        self.requires_punc = any(
+            ["punc" in strat["strategy"] for strat in self.hybrid_strategies]
+        )
+        if self.requires_punc:
+            # Store the punctuation vocabulary ids
+            punc_ids = torch.Tensor(kwargs["token_ids"]["punctuation"])
+            self.register_buffer("punc_ids", punc_ids)
+            # As well as a mask showing where punctuation ids are in the KV cache
+            # We store this to avoid re-computing the mask every time and having to store input_ids
+            self.register_buffer("punc_mask", torch.zeros(mask_shape, dtype=torch.bool))
+
+        self.requires_heavy_hitter = any(
+            ["heavy_hitter" in strat["strategy"] for strat in self.hybrid_strategies]
+        )
 
         # We need to use a mask since not all heads have same number of tokens. We can't simply truncate.
         # 1 dimension stands for query dimension, which will always be 1 (next token) for KV cache attention.
         kv_mask_shape = (max_batch_size, n_heads, 1, self.max_cache_length)
         self.register_buffer("mask", torch.zeros(kv_mask_shape, dtype=torch.bool))
-
-        self.hybrid_strategies = (
-            kwargs["hybrid_strategies"] or self.DEFAULT_HYBRID_STRATEGIES
-        )
 
         # NB: Kwargs are sdpa attention kwargs, not the kwargs for the "func"
         self.prefill_attn_callback = {
@@ -874,12 +874,20 @@ class KVCacheHybrid(KVCacheScissorhands):
 
     def return_attn(self):
         # We use a special callback for FastGen to profile the attention heads during prefill.
-        return not self.is_prefill() and self.requires_heavy_check
+        return not self.is_prefill() and self.requires_heavy_hitter
 
     def return_kv_cache(self):
         return self.k_cache, self.v_cache, self.mask
 
-    def eviction_idx_for_head(self, head_idx, input_pos, apply_window=False):
+    def eviction_idx_for_head(
+        self,
+        head_idx,
+        input_pos,
+        recent_window,
+        apply_window=False,
+        apply_special=False,
+        apply_punc=False,
+    ):
         numerator = (
             self.attn_history_num[:, head_idx, : self.cache_cts[head_idx]]
             .sum(dim=-1)
@@ -892,108 +900,107 @@ class KVCacheHybrid(KVCacheScissorhands):
         ].clamp_max(self.history_window_size)
         avg_attn = numerator / denominator
 
-        # Save the special & punctuation tokens from being evicted
-        save_mask = torch.logical_or(
-            self.special_mask[:, head_idx, : self.cache_cts[head_idx]],
-            self.punc_mask[:, head_idx, : self.cache_cts[head_idx]],
-        )
-        if apply_window:
-            save_mask = torch.logical_or(
-                save_mask,
-                self.pos[:, head_idx, : self.cache_cts[head_idx]]
-                >= input_pos - self.recent_window,
-            )
+        save_mask = None
 
-        avg_attn.masked_fill_(save_mask, 1)
+        if apply_special:
+            save_mask = self.special_mask[:, head_idx, : self.cache_cts[head_idx]]
+
+        if apply_punc:
+            punc_mask = self.punc_mask[:, head_idx, : self.cache_cts[head_idx]]
+            save_mask = punc_mask if save_mask is None else save_mask | punc_mask
+
+        if apply_window:
+            window_mask = (
+                self.pos[:, head_idx, : self.cache_cts[head_idx]]
+                >= input_pos - recent_window
+            )
+            save_mask = window_mask if save_mask is None else save_mask | window_mask
+
+        if save_mask is not None:
+            avg_attn.masked_fill_(save_mask, 1)
+
         fill_idx = avg_attn.argmin(dim=-1)
 
         return fill_idx
 
     def select_fill_idx(self, strategy, head_idx, input_pos, is_punc: bool = False):
-        fill_idx = None
-        eviction_required = False
-
         def _end_idx():
             # We need to clone because self.cache_cts will be incremented later and we don't want to have fill_idx as a mutable reference
             return min(self.max_cache_length - 1, self.cache_cts[head_idx].clone())
 
-        name = self.hybrid_strategies[strategy]
+        strategy = self.hybrid_strategies[strategy]
+        name = strategy["strategy"]
 
-        if name == "special":
-            pass  # We are assuming we don't generate special tokens
-        elif name == "special_punc":
-            if is_punc:
-                fill_idx = _end_idx()
-        elif name == "window":
-            budget = self.global_tokens + self.recent_window
-            eviction_required = self.cache_cts[head_idx] >= budget
-            if eviction_required:
-                fill_idx = torch.argmin(
-                    self.pos[:, head_idx, : self.cache_cts[head_idx]]
-                )
-            else:
-                fill_idx = _end_idx()
-        elif name in {"special_punc_heavy", "special_punc_heavy_local"}:
-            apply_window = name == "special_punc_heavy_local"
-            # If there's still room in the cache, just fill it in the next open slot
-            budget = (
-                self.num_special
-                + self.num_punc
-                + (self.heavy_hitter_frac * self.max_cache_length)
+        # If is punctuation token and we are preserving, we always add it to the end
+        if "punc" in name and is_punc:
+            return _end_idx(), False
+
+        if name == "full":
+            return _end_idx(), False
+
+        budget = self.global_tokens  # Every strategy has a budget for global tokens
+        if "special" in name:
+            budget += self.num_special
+
+        if "punc" in name:
+            budget += self.num_punc
+
+        if "window" in name:
+            budget += strategy["recent_window"] * self.max_cache_length
+
+        if "heavy_hitter" in name:
+            budget += strategy["heavy_hitter_frac"] * self.max_cache_length
+
+        budget = round(budget)
+
+        eviction_required = self.cache_cts[head_idx] >= budget
+
+        if not eviction_required:
+            return _end_idx(), False
+
+        if name == "window":
+            fill_idx = torch.argmin(self.pos[:, head_idx, : self.cache_cts[head_idx]])
+            return fill_idx, True  # Eviction Required
+
+        if "heavy_hitter" in name:
+            recent_window = round(
+                strategy.get("recent_window", 0) * self.max_cache_length
             )
-            if apply_window:  # We are also allowed budget for the recent tokens
-                budget += self.recent_window
-
-            eviction_required = self.cache_cts[head_idx] >= budget
-            if eviction_required:
-                # Figure out which token to evict -- make sure we don't evict special or punc
-                fill_idx = self.eviction_idx_for_head(
-                    head_idx, input_pos, apply_window=apply_window
-                )
-                self.attn_history_num[:, head_idx, fill_idx, :].fill_(0)
-                self.attn_history_denom[:, head_idx, fill_idx].fill_(0)
-            else:
-                # We can fit it in the cache
-                fill_idx = _end_idx()
-        elif name == "full":
-            fill_idx = _end_idx()
-        elif "heavy_hitter" in name:
-            heavy_hitter_frac = self.HYBRID_KWARGS[name]["heavy_hitter_frac"]
-            budget = (
-                self.global_tokens
-                + self.recent_window
-                + (heavy_hitter_frac * self.max_cache_length)
+            fill_idx = self.eviction_idx_for_head(
+                head_idx,
+                input_pos,
+                recent_window=recent_window,
+                apply_window="window" in name,
+                apply_punc="punc" in name,
+                apply_special="special" in name,
             )
-            eviction_required = self.cache_cts[head_idx] >= budget
-            if eviction_required:
-                # Figure out which token to evict -- make sure we don't evict special or punc
-                fill_idx = self.eviction_idx_for_head(
-                    head_idx, input_pos, apply_window=True
-                )
-                self.attn_history_num[:, head_idx, fill_idx, :].fill_(0)
-                self.attn_history_denom[:, head_idx, fill_idx].fill_(0)
-            else:
-                # We can fit it in the cache
-                fill_idx = _end_idx()
-        else:
-            raise ValueError(f"Unrecognized strategy index {strategy}.")
 
-        return fill_idx, eviction_required
+            return fill_idx, True  # Eviction Required
+
+        # If we reach here, we have a hybrid strategy that is not window, heavy hitter, or full
+        assert "punc" in name or "special" in name, f"Invalid hybrid strategy {name}"
+        return None, False
 
     def reset(self):
         super().reset()
+        self.mask.zero_()
+        self.cache_strategies.fill = None  # Free up memory temporarily
+
         self.num_special = 0
         self.num_punc = 0
-        self.mask.zero_()
-        self.special_mask.zero_()
-        self.punc_mask.zero_()
-        self.cache_strategies = None
-        self.requires_heavy_check = True
+
+        if hasattr(self, "special_mask"):
+            self.special_mask.zero_()
+
+        if hasattr(self, "punc_mask"):
+            self.punc_mask.zero_()
 
     def _update(self, input_pos, k_val, v_val, input_ids=None):
         n_heads = k_val.shape[1]
 
-        is_punc = torch.isin(input_ids, self.punc_ids)
+        is_punc = (
+            torch.isin(input_ids, self.punc_ids) if hasattr(self, "punc_ids") else False
+        )
 
         # If fill idx is None we place value at the back (which is truncated for attention calculation anyway)
         fill_indices = torch.full(
@@ -1014,19 +1021,26 @@ class KVCacheHybrid(KVCacheScissorhands):
                 continue
 
             fill_indices[head_idx] = fill_idx
-            if not eviction_required:
+            if eviction_required:
+                # Reset attention history since we've inserted a new token
+                self.attn_history_num[:, head_idx, fill_idx, :].fill_(0)
+                self.attn_history_denom[:, head_idx, fill_idx].fill_(0)
+            else:
+                # Increment cache_ct_incr for heads that have grown (no eviction)
                 cache_ct_incr[head_idx] = 1
                 # We can't use all fill indices to bulk assign mask because some fill_indices are dummies (self.max_cache_length - 1)
                 self.mask[:, head_idx, :, fill_idx] = True
 
         self.fill_headwise(fill_indices, input_pos, k_val, v_val)
-        self.punc_mask.scatter_(
-            2, fill_indices.view(1, -1, 1), is_punc.view(1, 1, 1).expand(1, n_heads, 1)
-        )
 
         # Only update global self.num_punc once (not once per head)
         # If a head keeps punc tokens, each head will have same number of punc tokens (no punc evictions)
-        if is_punc:
+        if is_punc and hasattr(self, "num_punc"):
+            self.punc_mask.scatter_(
+                2,
+                fill_indices.view(1, -1, 1),
+                is_punc.view(1, 1, 1).expand(1, n_heads, 1),
+            )
             self.num_punc += 1
 
         return cache_ct_incr
@@ -1058,101 +1072,119 @@ class KVCacheHybrid(KVCacheScissorhands):
 
         # Compute counts of usage for hybrid strategies
         cts = Counter(
-            [self.hybrid_strategies[i] for i in self.cache_strategies.tolist()]
+            [
+                self.hybrid_strategies[i]["strategy"]
+                for i in self.cache_strategies.tolist()
+            ]
+        )
+        stats["avg_strategy_idx"] = sum(self.cache_strategies.tolist()) / len(
+            self.cache_strategies
         )
         stats.update(
             {
                 strategy: cts.get(strategy, 0) / len(self.cache_strategies)
-                for strategy in self.hybrid_strategies
+                for strategy in sorted(
+                    list(set([x["strategy"] for x in self.hybrid_strategies]))
+                )
             }
         )
         return stats
 
-    def build_masks(self, cum_attn, device, heavy_hitter_n, window_size):
+    def build_masks(self, cum_attn, special_mask, punc_mask, total_len):
+        device = cum_attn.device
         n_heads, seq_len = cum_attn.shape
-
-        # punc_mask_exp = punc_mask.view(1, 1, -1).expand(n_heads, seq_len, seq_len)
-        window_mask = create_window_attention_mask(
-            seq_len, window_size, device, global_tokens=self.global_tokens
-        )
-
-        window_mask_exp = window_mask.unsqueeze(0).expand(n_heads, seq_len, seq_len)
-
-        attn_slice = cum_attn[:, self.global_tokens : seq_len - window_size]
-        n = attn_slice.shape[-1]
-
-        # low_heavy_hitters (exclude global and window tokens which are protected)
-        low_num = math.ceil(
-            min(
-                self.HYBRID_KWARGS["window_low_heavy_hitter"]["heavy_hitter_frac"]
-                * heavy_hitter_n,
-                n,
+        masks = []
+        for s in self.hybrid_strategies:
+            strat_mask = torch.zeros(
+                n_heads, seq_len, seq_len, dtype=torch.bool, device=device
             )
-        )
-        low_heavy_hitters = (
-            attn_slice.topk(
-                low_num,
-                dim=1,
-                largest=True,
-            )
-            .indices.unsqueeze(1)
-            .expand(-1, seq_len, -1)
-        ) + self.global_tokens
+            # All strategies have global tokens
+            strat_mask[:, :, : self.global_tokens] = True
 
-        high_num = math.ceil(
-            min(
-                self.HYBRID_KWARGS["window_high_heavy_hitter"]["heavy_hitter_frac"]
-                * heavy_hitter_n,
-                n,
-            )
-        )
-        high_heavy_hitters = (
-            attn_slice.topk(
-                high_num,
-                dim=1,
-                largest=True,
-            )
-            .indices.unsqueeze(1)
-            .expand(-1, seq_len, -1)
-        ) + self.global_tokens
+            name = s["strategy"]
+            if "special" in name:
+                strat_mask |= special_mask.view(1, 1, -1).expand(
+                    n_heads, seq_len, seq_len
+                )
 
-        window_low_heavy = window_mask_exp.scatter(2, low_heavy_hitters, True)
-        window_high_heavy = window_mask_exp.scatter(2, high_heavy_hitters, True)
+            if "punc" in name:
+                strat_mask |= punc_mask.view(1, 1, -1).expand(n_heads, seq_len, seq_len)
 
-        masks = torch.stack(
-            [
-                window_mask_exp,
-                window_low_heavy,
-                window_high_heavy,
-                torch.ones_like(window_mask_exp),
-            ]
-        )
-        return masks
+            if "window" in name:
+                assert (
+                    "recent_window" in s and s["recent_window"] <= 1
+                ), "Window strategy should have recent_window expressed as a fraction <= 1."
+                strat_mask |= (
+                    create_window_attention_mask(
+                        seq_len,
+                        max(1, int(s["recent_window"] * total_len)),
+                        device,
+                        global_tokens=self.global_tokens,
+                    )
+                    .unsqueeze(0)
+                    .expand(n_heads, seq_len, seq_len)
+                )
+
+            if "heavy_hitter" in name:
+                # Compute heavy hitters over tokens which are still masked
+                avail_idxs = torch.where(~strat_mask[0, -1, :])[0]
+
+                attn_slice = cum_attn.gather(
+                    1, avail_idxs.unsqueeze(0).expand(n_heads, -1)
+                )
+
+                num_hh = math.ceil(
+                    min(
+                        s["heavy_hitter_frac"] * total_len,
+                        len(avail_idxs),
+                    )
+                )
+
+                heavy_hitters = (
+                    attn_slice.topk(num_hh, dim=1, largest=True)
+                    .indices.sort(dim=1)
+                    .values
+                )
+
+                heavy_hitters_idx = (
+                    avail_idxs.view(1, -1).expand(n_heads, -1).gather(1, heavy_hitters)
+                )
+                strat_mask.scatter_(
+                    2,
+                    heavy_hitters_idx.view(n_heads, 1, num_hh).expand(
+                        n_heads, seq_len, num_hh
+                    ),
+                    True,
+                )
+            if name == "full":
+                strat_mask.fill_(True)
+
+            masks.append(strat_mask)
+        return torch.stack(masks)
 
     def profile_attn_heads(self, input_pos, input_ids, attn):
         input_ids = input_ids.squeeze(0)
         seq_len = input_ids.shape[-1]
 
-        # Average of cumulative attention probs (use input_pos to normalize)
-        cum_attn = torch.softmax(attn, dim=-1).squeeze(0).sum(dim=1) / (
-            seq_len - input_pos
+        # Only build masks as needed
+        special_mask = punc_mask = None
+        if self.requires_special:
+            special_mask = self.build_special_ids_mask(input_ids)
+            self.num_special = special_mask.sum()
+
+        if self.requires_punc:
+            punc_mask = self.build_punc_ids_mask(input_ids)
+            self.num_punc = punc_mask.sum()
+
+        cum_attn = (
+            None  # Only aggregate attention if its needed by one of the strategies
         )
+        if any(["heavy_hitter" in s["strategy"] for s in self.hybrid_strategies]):
+            # Average of cumulative attention probs (use input_pos to normalize)
+            cum_attn = attn.squeeze(0).sum(dim=1) / (seq_len - input_pos)
 
-        special_mask = self.build_special_ids_mask(input_ids)
-        # special_mask_exp = special_mask.view(1, 1, -1).expand(n_heads, seq_len, seq_len)
-        # Store number of special tokens for later use
-        self.num_special = special_mask.sum()
-
-        punc_mask = self.build_punc_ids_mask(input_ids)
-        self.num_punc = punc_mask.sum()
-
-        recent_window_frac = self.recent_window / self.max_cache_length
-        prompt_window_size = int(recent_window_frac * seq_len)
         masks_for_scoring = self.build_masks(
-            cum_attn,
-            input_pos.device,
-            window_size=prompt_window_size,
-            heavy_hitter_n=seq_len,
+            cum_attn, special_mask, punc_mask, total_len=seq_len
         )
 
         # Compute optimal strategies for each head based on prompt proportions
@@ -1160,17 +1192,16 @@ class KVCacheHybrid(KVCacheScissorhands):
         compressed_scores = (
             attn_rep.masked_fill(~masks_for_scoring, 0).sum(dim=-1).mean(dim=-1)
         )
+
         # For each column, return the first row which has cost >= min_recovery_frac
         cache_strategies = (
             (compressed_scores >= self.min_recovery_frac).int().argmax(dim=0)
         )
 
         # Base insertions on the optimal strategy across full sequence length
+        assert self.max_cache_length >= seq_len
         masks_for_filling = self.build_masks(
-            cum_attn,
-            input_pos.device,
-            window_size=self.recent_window,
-            heavy_hitter_n=self.max_cache_length,
+            cum_attn, special_mask, punc_mask, total_len=self.max_cache_length
         )
         # Take the last query's mask as the initial KV-Cache fill mask
         masks_all = masks_for_filling[:, :, -1, :].transpose(1, 0)
@@ -1201,14 +1232,31 @@ class KVCacheHybrid(KVCacheScissorhands):
         print([self.hybrid_strategies[i] for i in self.cache_strategies.tolist()])
 
         # If none of the heads selected a heavy hitter strategy, we don't need to track attention weights
-        self.requires_heavy_check = any(
-            ["heavy" in self.hybrid_strategies[i] for i in self.cache_strategies]
+        # Same for punctuation and special tokens
+        self.requires_heavy_hitter = any(
+            [
+                "heavy_hitter" in self.hybrid_strategies[i]["strategy"]
+                for i in self.cache_strategies
+            ]
+        )
+        self.requires_punc = any(
+            [
+                "punc" in self.hybrid_strategies[i]["strategy"]
+                for i in self.cache_strategies
+            ]
+        )
+        self.requires_special = any(
+            [
+                "special" in self.hybrid_strategies[i]["strategy"]
+                for i in self.cache_strategies
+            ]
         )
 
         # Put the selected items (true values from mask) to the front. Re-arrange attentions as well.
         order = mask_optimal.int().argsort(dim=1, descending=True)
         order_exp = order.view(1, n_heads, seq_len, 1).expand(-1, -1, -1, dim)
 
+        # We dump all the KV pairs into the cache yet order them based on the optimal strategy
         k_val = k_val.gather(2, order_exp)
         v_val = v_val.gather(2, order_exp)
         input_pos = input_pos.unsqueeze(0).expand(n_heads, -1).gather(1, order)
@@ -1217,17 +1265,20 @@ class KVCacheHybrid(KVCacheScissorhands):
         # Record number of tokens to be inserted into the cache
         self.cache_cts = mask_optimal.sum(dim=1)
 
-        # Not essentially but makes it easier to debug code
+        # Can remove for speed: doesn't change code but makes it easier to debug and see what's actually in the cache
         for head_idx in range(n_heads):
             self.pos[:, head_idx, self.cache_cts[head_idx] :].fill_(-1)
             self.k_cache[:, head_idx, self.cache_cts[head_idx] :].fill_(0)
             self.v_cache[:, head_idx, self.cache_cts[head_idx] :].fill_(0)
 
-        # We will need to remove special tokens and punctuation from heavy hitter eviction so need to their positions.
-        special_mask = special_mask.view(1, -1).expand(n_heads, -1).gather(1, order)
-        punc_mask = punc_mask.view(1, -1).expand(n_heads, -1).gather(1, order)
-        self.special_mask[:, :, :seq_len] = special_mask
-        self.punc_mask[:, :, :seq_len] = punc_mask
+        if hasattr(self, "special_mask"):
+            # We will need to remove special tokens and punctuation from heavy hitter eviction so need to their positions.
+            special_mask = special_mask.view(1, -1).expand(n_heads, -1).gather(1, order)
+            self.special_mask[:, :, :seq_len] = special_mask
+
+        if hasattr(self, "punc_mask"):
+            punc_mask = punc_mask.view(1, -1).expand(n_heads, -1).gather(1, order)
+            self.punc_mask[:, :, :seq_len] = punc_mask
 
         # Update mask to reflect how many items have been inserted into each head
         range_mask = (
@@ -1239,7 +1290,7 @@ class KVCacheHybrid(KVCacheScissorhands):
             range_mask < self.cache_cts.view(-1, 1).expand(-1, seq_len)
         ).view(-1, n_heads, 1, seq_len)
 
-        if self.requires_heavy_check:
+        if self.requires_heavy_hitter:
             # Update attention mask to indicate which we attentions are allowed.
             cum_attn = cum_attn.gather(1, order)
             self.update_attn_history(cum_attn)

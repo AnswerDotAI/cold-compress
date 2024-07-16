@@ -33,7 +33,13 @@ wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
 from tokenizer import get_tokenizer, encode
-from generation_utils import generate, load_model, get_model_size, setup_caches
+from generation_utils import (
+    generate,
+    get_model_size,
+    load_model,
+    merge_cache_config,
+    setup_caches,
+)
 from cache import add_cache_arguments, cache_compatibility
 
 
@@ -168,10 +174,19 @@ if __name__ == "__main__":
         "--max_new_tokens", type=int, default=512, help="Maximum number of new tokens."
     )
 
+    parser.add_argument(
+        "--cache_config",
+        type=str,
+        default=None,
+        help="Name of YAML file in ./cache_configs.",
+    )
+
+    args = parser.parse_args()
+
     add_generation_arguments(parser)
     add_cache_arguments(parser)
 
-    args = parser.parse_args()
+    args = merge_cache_config(parser.parse_args())
 
     if args.prompt.endswith(".txt"):
         prompt_fn = Path(__file__).resolve().parent / "prompts" / args.prompt
