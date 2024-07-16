@@ -1229,7 +1229,7 @@ class KVCacheHybrid(KVCacheScissorhands):
         )
 
         # Uncomment to show which strategies are selected
-        print([self.hybrid_strategies[i] for i in self.cache_strategies.tolist()])
+        # print([self.hybrid_strategies[i] for i in self.cache_strategies.tolist()])
 
         # If none of the heads selected a heavy hitter strategy, we don't need to track attention weights
         # Same for punctuation and special tokens
