@@ -336,7 +336,9 @@ def replace_linear_weight_only_int8_per_channel(module):
             setattr(
                 module,
                 name,
-                WeightOnlyInt8Linear(child.in_features, child.out_features),
+                WeightOnlyInt8Linear(
+                    child.in_features, child.out_features, bias=child.bias is not None
+                ),
             )
         else:
             replace_linear_weight_only_int8_per_channel(child)
@@ -356,6 +358,8 @@ class WeightOnlyInt8QuantHandler:
                 )
                 cur_state_dict[f"{fqn}.weight"] = int8_weight
                 cur_state_dict[f"{fqn}.scales"] = scales.to(mod.weight.dtype)
+                if mod.bias is not None:
+                    cur_state_dict[f"{fqn}.bias"] = mod.bias
 
         return cur_state_dict
 
@@ -374,7 +378,7 @@ class WeightOnlyInt8Linear(torch.nn.Module):
         self,
         in_features: int,
         out_features: int,
-        bias: bool = True,
+        bias: bool = False,
         device=None,
         dtype=None,
     ) -> None:
@@ -386,9 +390,18 @@ class WeightOnlyInt8Linear(torch.nn.Module):
             "weight", torch.empty((out_features, in_features), dtype=torch.int8)
         )
         self.register_buffer("scales", torch.ones(out_features, dtype=torch.bfloat16))
+        if bias:
+            self.register_buffer(
+                "bias", torch.zeros(out_features, dtype=torch.bfloat16)
+            )
+        else:
+            self.register_parameter("bias", None)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return F.linear(input, self.weight.to(dtype=input.dtype)) * self.scales
+        output = F.linear(input, self.weight.to(dtype=input.dtype)) * self.scales
+        if self.bias is not None:
+            output += self.bias
+        return output
 
 
 ##### weight only int4 per channel groupwise quantized code ######
@@ -429,7 +442,7 @@ def replace_linear_int4(module, groupsize, inner_k_tiles, padding):
                     WeightOnlyInt4Linear(
                         child.in_features,
                         child.out_features,
-                        bias=False,
+                        bias=child.bias is not None,
                         groupsize=groupsize,
                         inner_k_tiles=inner_k_tiles,
                         padding=False,
@@ -442,7 +455,7 @@ def replace_linear_int4(module, groupsize, inner_k_tiles, padding):
                     WeightOnlyInt4Linear(
                         child.in_features,
                         child.out_features,
-                        bias=False,
+                        bias=child.bias is not None,
                         groupsize=groupsize,
                         inner_k_tiles=inner_k_tiles,
                         padding=True,
@@ -471,7 +484,6 @@ class WeightOnlyInt4QuantHandler:
         cur_state_dict = self.mod.state_dict()
         for fqn, mod in self.mod.named_modules():
             if isinstance(mod, torch.nn.Linear):
-                assert not mod.bias
                 out_features = mod.out_features
                 in_features = mod.in_features
                 assert out_features % 8 == 0, "require out_features % 8 == 0"
@@ -507,6 +519,8 @@ class WeightOnlyInt4QuantHandler:
                 )
                 cur_state_dict[f"{fqn}.weight"] = weight_int4pack.to("cpu")
                 cur_state_dict[f"{fqn}.scales_and_zeros"] = scales_and_zeros.to("cpu")
+                if mod.bias is not None:
+                    cur_state_dict[f"{fqn}.bias"] = mod.bias
 
         return cur_state_dict
 
@@ -540,7 +554,7 @@ class WeightOnlyInt4GPTQQuantHandler(GPTQQuantHandler):
         )
 
         # we need to do the padding here, both for q and the qparams if necessary
-        def make_names_and_values_dict_func(q, qparams):
+        def make_names_and_values_dict_func(q, qparams, bias=None):
             k = q.shape[1]
             new_k = find_multiple(k, 1024)
             # how much we need to pad the weight
@@ -554,7 +568,9 @@ class WeightOnlyInt4GPTQQuantHandler(GPTQQuantHandler):
             final_s_and_z = F.pad(
                 scales_and_zeros, pad=(0, 0, 0, 0, 0, delta_groups), value=1
             )
-            return {"weight": final_q, "scales_and_zeros": final_s_and_z}
+            result = {"weight": final_q, "scales_and_zeros": final_s_and_z}
+            if bias is not None:
+                result["bias"] = bias
 
         self.make_names_and_values_dict_func = make_names_and_values_dict_func
         super().__init__()
@@ -574,7 +590,7 @@ class WeightOnlyInt4Linear(torch.nn.Module):
         self,
         in_features: int,
         out_features: int,
-        bias=True,
+        bias=False,
         device=None,
         dtype=None,
         groupsize: int = 128,
@@ -591,7 +607,6 @@ class WeightOnlyInt4Linear(torch.nn.Module):
 
         self.in_features = in_features
         self.out_features = out_features
-        assert not bias, "require bias=False"
         self.groupsize = groupsize
         self.inner_k_tiles = inner_k_tiles
 
@@ -617,6 +632,12 @@ class WeightOnlyInt4Linear(torch.nn.Module):
                 (in_features // groupsize, out_features, 2), dtype=torch.bfloat16
             ),
         )
+        if bias:
+            self.register_buffer(
+                "bias", torch.zeros(out_features, dtype=torch.bfloat16)
+            )
+        else:
+            self.register_parameter("bias", None)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         input = input.to(torch.bfloat16)
@@ -624,9 +645,12 @@ class WeightOnlyInt4Linear(torch.nn.Module):
             import torch.nn.functional as F
 
             input = F.pad(input, pad=(0, self.in_features - self.origin_in_features))
-        return linear_forward_int4(
+        output = linear_forward_int4(
             input, self.weight, self.scales_and_zeros, self.out_features, self.groupsize
         )
+        if self.bias is not None:
+            output += self.bias
+        return output
 
 
 def quantize(
