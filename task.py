@@ -718,7 +718,7 @@ class RulerCWE(EvaluationTask):
         }
 
 
-class ReproBench(EvaluationTask):
+class RepoBench(EvaluationTask):
     DEFAULT_PROMPT_TEMPLATE = """You will be given python files from a code repository, with the current file being shown last. Your task is to predict the next line of code in the current file.
 NOTE: You should only predict the next line in the current file. Do not produce more than one line, and do not provide any explanation.
 
@@ -755,7 +755,7 @@ TASK_MAPPING = {
     "musique": Musique,
     "pg19": PG19,
     "qmsum": QMSum,
-    "reprobench": ReproBench,
+    "repobench": RepoBench,
     "rulerqa": RulerQA,
     "rulerniah": RulerNIAH,
     "rulervt": RulerVT,

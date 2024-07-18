@@ -227,10 +227,12 @@ class Transformer(nn.Module):
         stats = {}
         final_seq_len = prompt_len + gen_len
         avgs = defaultdict(list)
+        mem_total = 0
         for layer_idx, layer in enumerate(self.layers):
             stat = layer.attention.kv_cache.compute_statistics(
                 seq_len=torch.tensor(final_seq_len)
             )
+            mem_total += stat.pop("cache_memory_gb")
             for k, v in stat.items():
                 stats[f"{k}_{layer_idx}"] = v
                 avgs[k].append(v)
@@ -238,6 +240,7 @@ class Transformer(nn.Module):
         for k, v in avgs.items():
             stats[f"{k}_avg"] = sum(v) / len(v)
 
+        stats["cache_memory_gb"] = mem_total
         return stats
 
     def min_cache_length(self):

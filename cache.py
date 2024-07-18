@@ -29,7 +29,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         choices=["tile", "repeat", "funnel", "pyramid"],
     )
 
-    strategies = ["full", "random", "window", "scissor", "l2", "hybrid"]
+    strategies = ["full", "random", "window", "scissor", "l2", "hybrid", "keep_it_odd"]
     debug_strategies = [f"debug_{strategy}" for strategy in strategies]
     strategies.extend(debug_strategies)
 
@@ -58,7 +58,6 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         "--prompt_compression_strategy",  # This doesn't matter if args.feed_long_prompts is True
         default=["recent_global"],
         nargs="+",
-        choices=["recent_global", "snapkv", "l2", "random"],
         help="If |prompt| exceeds max_cache_length, we need to specify a strategy for compressing it to max_cache_length.",
     )
 
@@ -226,6 +225,18 @@ class KVCache(ABC, nn.Module):
         """
         return False
 
+    def memory_usage(self):
+        tensors = []
+        for obj in vars(self).values():
+            if torch.is_tensor(obj):
+                tensors.append(obj)
+            elif isinstance(obj, dict):
+                for vv in obj.values():
+                    if torch.is_tensor(vv):
+                        tensors.append(vv)
+
+        return sum([t.element_size() * t.numel() for t in tensors]) / (1024**3)
+
     def compute_statistics(self, seq_len):
         """
         Computes statistics about the cache.
@@ -235,6 +246,7 @@ class KVCache(ABC, nn.Module):
         """
         return {
             "compression_ratio": self.compression_ratio(seq_len).item(),
+            "cache_memory_gb": self.memory_usage(),
         }
 
     def compression_ratio(self, seq_len):
@@ -1415,6 +1427,49 @@ class KVCacheAnalysis(KVCache):
         return stats
 
 
+class KVCacheKeepItOdd(KVCache):
+    relevant_kwargs = [
+        "max_cache_length",
+        "max_seq_length",
+        "global_tokens",
+        "prompt_compression_strategy",
+    ]
+
+    def __init__(
+        self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
+    ):
+        super().__init__(
+            max_batch_size,
+            n_heads,
+            head_dim,
+            dtype,
+            head_specific=False,
+            variable_length=False,
+            **kwargs,
+        )
+
+    def _update(self, input_pos, k_val, v_val, input_ids=None):
+        start = end = None  # We will fill the cache in order if start and end are None
+        odd_idxs = torch.argwhere(
+            torch.logical_or(input_pos < self.global_tokens, input_pos % 2 == 1)
+        ).squeeze(1)
+
+        if len(odd_idxs) == 0:
+            return 0
+
+        input_pos = input_pos[odd_idxs]
+        k_val = k_val[:, :, odd_idxs, :]
+        v_val = v_val[:, :, odd_idxs, :]
+
+        need_to_evict = self.cache_cts >= self.max_cache_length
+        if need_to_evict:  # Select a spot at random
+            start = torch.argmin(self.pos)
+            end = start + 1
+
+        self.fill_contiguous(input_pos, k_val, v_val, start=start, end=end)
+        return 0 if need_to_evict else input_pos.shape[-1]
+
+
 def get_cache_constructor(cache_strategy):
     relevant_kwargs = None
     if cache_strategy == "full":
@@ -1429,6 +1484,8 @@ def get_cache_constructor(cache_strategy):
         cls = KVCacheScissorhands
     elif cache_strategy == "hybrid":
         cls = KVCacheHybrid
+    elif cache_strategy == "keep_it_odd":
+        cls = KVCacheKeepItOdd
     elif cache_strategy.startswith("debug"):
         cache_strategy = re.sub(r"debug_+", "", cache_strategy).strip()
         relevant_kwargs = get_cache_constructor(cache_strategy)[1]

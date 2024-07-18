@@ -181,6 +181,34 @@ class PromptCompressorL2(PromptCompressor):
         return keep_idxs, k_val_compressed, v_val_compressed
 
 
+class PromptCompressorKeepItOdd(PromptCompressor):
+    def __init__(self, head_specific, **kwargs) -> None:
+        super().__init__(head_specific, **kwargs)
+
+    def is_compatible(self) -> bool:
+        # Can be used with any cache
+        return True
+
+    def requires_attn(self) -> bool:
+        return False
+
+    def idxs_to_save(self, input_pos):
+        odd_idxs = torch.argwhere(
+            torch.logical_or(input_pos < self.global_tokens, input_pos % 2 == 1)
+        ).squeeze(1)
+        remove_middle_n = max(len(odd_idxs) - self.max_cache_length, 0)
+        if remove_middle_n > 0:
+            odd_idxs = odd_idxs[remove_middle_n // 2 : -remove_middle_n // 2]
+            assert len(odd_idxs) == self.max_cache_length
+        return odd_idxs
+
+    def __call__(self, input_pos, k_val, v_val):
+        keep_idxs = self.idxs_to_save(input_pos)
+        k_val = k_val[:, :, keep_idxs]
+        v_val = v_val[:, :, keep_idxs]
+        return keep_idxs, k_val, v_val
+
+
 def prompt_compressor_constructor(strategy):
     if strategy == "recent_global":
         return PromptCompressorRecentGlobal
@@ -190,5 +218,7 @@ def prompt_compressor_constructor(strategy):
         return PromptCompressorL2
     elif strategy == "random":
         return PromptCompressorRandom
+    elif strategy == "keep_it_odd":
+        return PromptCompressorKeepItOdd
     else:
         raise ValueError(f"Unknown prompt compression strategy: {strategy}")
