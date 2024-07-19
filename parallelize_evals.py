@@ -3,6 +3,7 @@ import queue
 import threading
 import time
 import os
+import sys
 import json
 import argparse
 import itertools
@@ -132,16 +133,21 @@ class GPUJobQueue:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run eval jobs for given yaml configs")
     parser.add_argument(
+        "--command_file",
+        type=str,
+        help="text file consisting of commands (1 per line) to be run",
+    )
+    parser.add_argument(
         "--config_names",
         nargs="+",
         help="YAML configuration files that need to be evaluated",
-        required=True,
+        required="--command_file" not in sys.argv,
     )
     parser.add_argument(
         "--tasks",
         type=str,
         nargs="+",
-        required=True,
+        required="--command_file" not in sys.argv,
         choices=list(TASK_MAPPING.keys()),
         help="List of tasks to be evaluated.",
     )
@@ -179,43 +185,53 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    configs = []
-    for config in args.config_names:
-        if not config.endswith(".yaml"):
-            config = config + ".yaml"
-        assert os.path.join(
-            os.path.abspath(__file__), "cache_configs", config
-        ), f"{config} not found in cache_configs"
-        configs.append(config)
-
     gpu_queue = GPUJobQueue(num_gpus=args.num_gpus, log_dir=args.log_dir)
 
-    base_command = "python eval.py --task {task} --checkpoint {chkpt} --cache_config {config} --num_samples {ns} --compile --max_cache_length {cs}"
+    if args.command_file:
+        with open(args.command_file) as fin:
+            lines = [line.strip() for line in fin]
+        for line in lines:
+            if line:
+                gpu_queue.add_job(line)
 
-    # Create tasks and add them to the task queue.
-    tasks = list(itertools.product(args.tasks, args.cache_sizes, configs))
-    for task, cs, config in itertools.product(args.tasks, args.cache_sizes, configs):
-        gpu_queue.add_job(
-            base_command.format(
-                task=task,
-                chkpt=args.checkpoint_path,
-                config=config,
-                ns=args.num_samples,
-                cs=cs,
-            )
-        )
+    else:
+        configs = []
+        for config in args.config_names:
+            if not config.endswith(".yaml"):
+                config = config + ".yaml"
+            assert os.path.join(
+                os.path.abspath(__file__), "cache_configs", config
+            ), f"{config} not found in cache_configs"
+            configs.append(config)
 
-    if args.add_full:
-        for task in args.tasks:
+        base_command = "python eval.py --task {task} --checkpoint {chkpt} --cache_config {config} --num_samples {ns} --compile --max_cache_length {cs}"
+
+        # Create tasks and add them to the task queue.
+        tasks = list(itertools.product(args.tasks, args.cache_sizes, configs))
+        for task, cs, config in itertools.product(
+            args.tasks, args.cache_sizes, configs
+        ):
             gpu_queue.add_job(
                 base_command.format(
                     task=task,
                     chkpt=args.checkpoint_path,
-                    config="full.yaml",
+                    config=config,
                     ns=args.num_samples,
-                    cs=1.0,
+                    cs=cs,
                 )
             )
+
+        if args.add_full:
+            for task in args.tasks:
+                gpu_queue.add_job(
+                    base_command.format(
+                        task=task,
+                        chkpt=args.checkpoint_path,
+                        config="full.yaml",
+                        ns=args.num_samples,
+                        cs=1.0,
+                    )
+                )
 
     print(f"Adding {gpu_queue.job_queue.qsize()} tasks into the job queue")
 
