@@ -6,8 +6,8 @@ DIR=$(dirname $(dirname "$0"))
 export CKPT=$DIR/checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth
 NUM_SAMPLES=500
 GLOBAL_TOKENS=4
-CACHE_STRATEGY="scissor"
-PROMPT_STRATEGY="snapkv"
+CACHE_STRATEGY="heavy_hitter"
+PROMPT_STRATEGY="heavy_hitter"
 TASKS="rulerniah musique dolomites"
 
 SHARED_ARGS="--compile --tasks ${TASKS} --global_tokens ${GLOBAL_TOKENS} --checkpoint_path ${CKPT} --num_samples ${NUM_SAMPLES}"

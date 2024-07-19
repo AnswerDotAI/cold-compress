@@ -90,10 +90,10 @@ class PromptCompressorRecentGlobal(PromptCompressor):
         return keep_idxs, k_val, v_val
 
 
-class PromptCompressorSnapKV(PromptCompressor):
+class PromptCompressorHeavyHitter(PromptCompressor):
     """
     Use SnapKV to compress the prompt
-    Inspired by the pseudo code on Page 7 of https://arxiv.org/abs/2404.14469
+    Based on the pseudo code on Page 7 of https://arxiv.org/abs/2404.14469
     """
 
     def __init__(self, head_specific, **kwargs) -> None:
@@ -212,8 +212,8 @@ class PromptCompressorKeepItOdd(PromptCompressor):
 def prompt_compressor_constructor(strategy):
     if strategy == "recent_global":
         return PromptCompressorRecentGlobal
-    elif strategy == "snapkv":
-        return PromptCompressorSnapKV
+    elif strategy == "heavy_hitter":
+        return PromptCompressorHeavyHitter
     elif strategy == "l2":
         return PromptCompressorL2
     elif strategy == "random":

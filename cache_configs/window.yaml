@@ -1,3 +1,0 @@
-cache_strategy: ["window"]
-prompt_compression_strategy: ["recent_global"]
-global_tokens: 4

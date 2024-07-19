@@ -1,5 +1,5 @@
-cache_strategy: ["scissor"]
-prompt_compression_strategy: ["snapkv"]
+cache_strategy: ["heavy_hitter"]
+prompt_compression_strategy: ["heavy_hitter"]
 global_tokens: 4
 recent_window: 10
 history_window_size: 400

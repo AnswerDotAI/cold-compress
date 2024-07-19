@@ -22,14 +22,23 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         If 0 < x <= 1, it is percent of |prompt| + max new tokens. Otherwise, if > 1, its the maximum size.",
     )
 
-    # ScissorHands (https://arxiv.org/abs/2305.17118) recommends smaller caches at higher levels --> pyramid
+    # ScissorHands (https://arxiv.org/abs/2305.17118) recommends large caches at higher levels --> funnel
+    # Yet PyramidKV (https://arxiv.org/abs/2406.02069) recommends the opposite --> pyramid shaped
     group.add_argument(
         "--cache_length_pattern",
         default="tile",
         choices=["tile", "repeat", "funnel", "pyramid"],
     )
 
-    strategies = ["full", "random", "window", "scissor", "l2", "hybrid", "keep_it_odd"]
+    strategies = [
+        "full",
+        "random",
+        "recent_global",
+        "heavy_hitter",
+        "l2",
+        "hybrid",
+        "keep_it_odd",
+    ]
     debug_strategies = [f"debug_{strategy}" for strategy in strategies]
     strategies.extend(debug_strategies)
 
@@ -67,12 +76,12 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         default=1,
         type=int,
         help="The number of initial tokens to always include in the KV-Cache.  \
-        If using window strategy, the actual window becomes max_cache_length - global_tokens.",
+        If using recent_global strategy, the actual window size becomes max_cache_length - global_tokens.",
     )
 
     # Locality
     group.add_argument(
-        "--recent_window",  # NB: for KVCacheWindow, recent_window is implicitly set to self.max_cache_length - self.global_tokens.
+        "--recent_window",  # NB: for KVCacheRecentGlobal, recent_window is implicitly set to self.max_cache_length - self.global_tokens.
         default=10,  # 10 is default specified in ScissorHands paper ("r" in Algorithm 2).
         type=float,  # If < 1, it is a fraction of max_cache_length.
         help="The number of recently generated tokens to always spare from eviction.",
@@ -102,7 +111,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         "--attn_record_freq",
         default=1,
         type=int,
-        help="How often to record attention weights for the ScissorHands cache.",
+        help="How often to record attention weights for the Heavy Hitter cache.",
     )
 
     # Hybrid (FastGen) -specific Hyperparameters (--cache_strategy == "hybrid")
@@ -122,10 +131,10 @@ def cache_compatibility(args):
             assert (
                 length == 1.0
             ), "Full cache strategy only supports max_cache_length=1.0."
-        if cache_strat == "scissor":
+        if cache_strat == "heavy_hitter":
             assert (
-                prompt_strat == "snapkv"
-            ), f'Scissor requires "snapkv" prompt compression strategy, not {prompt_strat}'
+                prompt_strat == "heavy_hitter"
+            ), f'Heavy Hitters requires "heavy_hitter" prompt compression strategy, not {prompt_strat}'
 
     print("The cache argument values you provided appear compatible with each other!")
 
@@ -525,7 +534,7 @@ class KVCacheRandom(KVCache):
         return 0 if need_to_evict else input_pos.shape[-1]
 
 
-class KVCacheWindow(KVCache):
+class KVCacheRecentGlobal(KVCache):
     relevant_kwargs = [
         "max_cache_length",
         "max_seq_length",
@@ -571,7 +580,7 @@ class KVCacheWindow(KVCache):
         return 0 if need_to_evict else input_pos.shape[-1]
 
 
-class KVCacheL2(KVCacheWindow):
+class KVCacheL2(KVCacheRecentGlobal):
     relevant_kwargs = [
         "max_cache_length",
         "max_seq_length",
@@ -615,13 +624,14 @@ class KVCacheL2(KVCacheWindow):
 
     def update_attn_history(self, attn):
         """
-        This will be called if |prompt| > max_cache_length and SnapKV prompt compression is used.
+        This will be called if |prompt| > max_cache_length and HeavyHitter (e.g., SnapKV) prompt compression is used.
         Because L2 cache does not require attention weights, this function is a no-op.
         """
         pass
 
 
-class KVCacheScissorhands(KVCacheWindow):
+class KVCacheHeavyHitter(KVCacheRecentGlobal):
+    # This class mostly follows the logic in ScissorHands (https://arxiv.org/abs/2305.17118)
     relevant_kwargs = [
         "max_cache_length",
         "max_seq_length",
@@ -808,7 +818,9 @@ class KVCacheScissorhands(KVCacheWindow):
         return 0
 
 
-class KVCacheHybrid(KVCacheScissorhands):
+class KVCacheHybrid(KVCacheHeavyHitter):
+    # This class mostly follows the logic in FastGen (https://arxiv.org/abs/2310.01801)
+    # Yet, it allows for a wider set of hybrid strategies to be considered during profiling.
     relevant_kwargs = [
         "max_cache_length",
         "max_seq_length",
@@ -1309,6 +1321,12 @@ class KVCacheHybrid(KVCacheScissorhands):
 
 
 class KVCacheAnalysis(KVCache):
+    """
+    This cache is triggered by prepending `debug_` to an existing cache strategy.
+
+    It will analyze the attention loss incurred from compressing with that cache strategy
+    """
+
     relevant_kwargs = [
         "max_cache_length",
         "max_seq_length",
@@ -1331,7 +1349,7 @@ class KVCacheAnalysis(KVCache):
         n_heads,
         head_dim,
         dtype=torch.bfloat16,
-        cache_strategy="scissor",
+        cache_strategy="heavy_hitter",
         **kwargs,
     ):
         # Never any prompt compression for full cache
@@ -1478,10 +1496,10 @@ def get_cache_constructor(cache_strategy):
         cls = KVCacheL2
     elif cache_strategy == "random":
         cls = KVCacheRandom
-    elif cache_strategy == "window":
-        cls = KVCacheWindow
-    elif cache_strategy == "scissor":
-        cls = KVCacheScissorhands
+    elif cache_strategy == "recent_global":
+        cls = KVCacheRecentGlobal
+    elif cache_strategy == "heavy_hitter":
+        cls = KVCacheHeavyHitter
     elif cache_strategy == "hybrid":
         cls = KVCacheHybrid
     elif cache_strategy == "keep_it_odd":
