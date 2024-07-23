@@ -114,7 +114,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         help="How often to record attention weights for the Heavy Hitter cache.",
     )
 
-    # Hybrid (FastGen) -specific Hyperparameters (--cache_strategy == "hybrid")
+    # Hybrid, e.g., FastGen -specific Hyperparameters (--cache_strategy == "hybrid")
     parser.add_argument(
         "--min_recovery_frac",
         default=0.9,
@@ -869,6 +869,7 @@ class KVCacheHybrid(KVCacheHeavyHitter):
             self.register_buffer(
                 "special_mask", torch.zeros(mask_shape, dtype=torch.bool)
             )
+            self.register_buffer("num_special", torch.zeros((1,), dtype=torch.int))
 
         self.requires_punc = any(
             ["punc" in strat["strategy"] for strat in self.hybrid_strategies]
@@ -880,6 +881,7 @@ class KVCacheHybrid(KVCacheHeavyHitter):
             # As well as a mask showing where punctuation ids are in the KV cache
             # We store this to avoid re-computing the mask every time and having to store input_ids
             self.register_buffer("punc_mask", torch.zeros(mask_shape, dtype=torch.bool))
+            self.register_buffer("num_punc", torch.zeros((1,), dtype=torch.int))
 
         self.requires_heavy_hitter = any(
             ["heavy_hitter" in strat["strategy"] for strat in self.hybrid_strategies]
@@ -962,7 +964,10 @@ class KVCacheHybrid(KVCacheHeavyHitter):
         if name == "full":
             return _end_idx(), False
 
-        budget = self.global_tokens  # Every strategy has a budget for global tokens
+        # Every strategy has a budget for global tokens
+        budget = torch.tensor(
+            [self.global_tokens], dtype=torch.int, device=input_pos.device
+        )
         if "special" in name:
             budget += self.num_special
 
@@ -970,12 +975,10 @@ class KVCacheHybrid(KVCacheHeavyHitter):
             budget += self.num_punc
 
         if "window" in name:
-            budget += strategy["recent_window"] * self.max_cache_length
+            budget += round(strategy["recent_window"] * self.max_cache_length)
 
         if "heavy_hitter" in name:
-            budget += strategy["heavy_hitter_frac"] * self.max_cache_length
-
-        budget = round(budget)
+            budget += round(strategy["heavy_hitter_frac"] * self.max_cache_length)
 
         eviction_required = self.cache_cts[head_idx] >= budget
 
@@ -1010,14 +1013,13 @@ class KVCacheHybrid(KVCacheHeavyHitter):
         self.mask.zero_()
         self.cache_strategies.fill = None  # Free up memory temporarily
 
-        self.num_special = 0
-        self.num_punc = 0
-
         if hasattr(self, "special_mask"):
             self.special_mask.zero_()
+            self.num_special.zero_()
 
         if hasattr(self, "punc_mask"):
             self.punc_mask.zero_()
+            self.num_punc.zero_()
 
     def _update(self, input_pos, k_val, v_val, input_ids=None):
         n_heads = k_val.shape[1]

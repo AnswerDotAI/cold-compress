@@ -1,0 +1,3 @@
+cache_strategy: ["keep_it_odd"]
+prompt_compression_strategy: ["keep_it_odd"]
+max_cache_length: [0.5]
