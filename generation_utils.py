@@ -5,6 +5,7 @@ from pathlib import Path
 import torch
 import torch._dynamo.config
 import torch._inductor.config
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 import argparse
 import yaml
@@ -90,13 +91,6 @@ def device_sync(device):
         print(f"device={device} is not yet suppported")
 
 
-def multinomial_sample_one_no_sync(
-    probs_sort,
-):  # Does multinomial sampling without a cuda synchronization
-    q = torch.empty_like(probs_sort).exponential_(1)
-    return torch.argmax(probs_sort / q, dim=-1, keepdim=True).to(dtype=torch.int)
-
-
 def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = None):
     logits = logits / max(temperature, 1e-5)
 
@@ -106,20 +100,6 @@ def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = Non
         logits = torch.where(logits < pivot, -float("Inf"), logits)
     probs = torch.nn.functional.softmax(logits, dim=-1)
     return probs
-
-
-def sample(
-    logits: torch.Tensor,
-    next_token: torch.Tensor = None,
-    temperature: float = 1.0,
-    top_k: Optional[int] = None,
-):
-    probs = logits_to_probs(logits[0, -1], temperature, top_k)
-    if next_token is None:
-        idx_next = multinomial_sample_one_no_sync(probs)
-    else:
-        idx_next = next_token
-    return idx_next, probs
 
 
 def greedy(logits, next_token):
@@ -145,7 +125,7 @@ def prefill(
         .unsqueeze(0)
         .to(x.device)
     )
-    logits = model(x, input_pos, mask=causal_mask)
+    logits = model(x, input_pos, mask=causal_mask, is_prefill=True)
     return greedy(logits, next_token)
 
 
@@ -158,8 +138,12 @@ def decode_one_token(
     **sampling_kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     # input_pos: [B, 1]
-    assert input_pos.shape[-1] == 1
-    logits = model(x, input_pos, attn_top_k=attn_top_k)
+    logits = model(
+        x,
+        input_pos,
+        is_prefill=False,
+        attn_top_k=attn_top_k,
+    )
     return greedy(logits, next_token=next_token)
 
 
@@ -167,6 +151,7 @@ def decode_n_tokens(
     model: Transformer,
     cur_token: torch.Tensor,
     input_pos: torch.Tensor,
+    decode_one_token: callable,
     num_new_tokens: int,
     terminator_ids: Optional[list] = None,
     attn_top_k: float = 1,
@@ -175,8 +160,8 @@ def decode_n_tokens(
 ):
     new_tokens, new_probs = [], []
     for i in range(num_new_tokens):
-        with torch.backends.cuda.sdp_kernel(
-            enable_flash=False, enable_mem_efficient=False, enable_math=True
+        with sdpa_kernel(
+            [SDPBackend.MATH]
         ):  # Actually better for Inductor to codegen attention here
             teacher_force = prefix is not None and i < len(prefix)
             next_token = prefix[i].view(1) if teacher_force else None
@@ -355,13 +340,6 @@ def setup_caches(
                 for l in cache_kwargs["max_cache_length"]
             ]
 
-    # Gets called twice when model is wrapped in torch.compile which causes an error without the if statement
-    if type(cache_kwargs["drop_amount"]) != list:
-        cache_kwargs["drop_amount"] = [
-            max(int(cache_kwargs["drop_amount"] * l), 1)
-            for l in cache_kwargs["max_cache_length"]
-        ]
-
     assert cache_kwargs["global_tokens"] <= min(
         cache_kwargs["max_cache_length"]
     ), "Global tokens must be less than max_cache_length."
@@ -391,6 +369,8 @@ def get_cache_stats(model: Transformer, prompt_len: int, gen_len: int):
 def generate(
     model: Transformer,
     prompt: torch.Tensor,
+    prefill: callable,
+    decode_one_token: callable,
     max_new_tokens: int,
     next_tokens: Optional[torch.Tensor] = None,
     terminator_ids: Optional[list] = None,
@@ -466,6 +446,7 @@ def generate(
         model,
         next_token.view(1, -1),
         input_pos,
+        decode_one_token,
         max_new_tokens - 1,
         terminator_ids=terminator_ids,
         prefix=prefix,
@@ -526,3 +507,22 @@ def get_model_size(model):
             for p in itertools.chain(child.parameters(), child.buffers()):
                 model_size += p.numel() * p.dtype.itemsize
     return model_size
+
+
+def compile_funcs(compile=True):
+    if compile:
+        global decode_one_token, prefill
+        decode_one_token = torch.compile(
+            decode_one_token,
+            fullgraph=True,
+            # dynamic=True,
+            mode="reduce-overhead",
+            # options={"trace.graph_diagram": True, "trace.enabled": True}
+        )
+        prefill = torch.compile(
+            prefill,
+            fullgraph=True,
+            dynamic=True,
+            # options={"trace.graph_diagram": True, "trace.enabled": True}
+        )
+    return prefill, decode_one_token

@@ -12,19 +12,49 @@ from typing import Optional
 import torch
 import torch._dynamo.config
 import torch._inductor.config
+import logging
 
 from cache import add_cache_arguments
 from generation_utils import (
     add_generation_arguments,
     compute_max_seq_length,
-    decode_one_token,
     device_sync,
-    prefill,
+    compile_funcs,
 )
+
+
+def pytorch_logs_to_file(file: str = "pytorch.log"):
+    torch._logging.set_logs(
+        dynamo=logging.INFO,
+        aot=logging.INFO,
+        inductor=logging.INFO,
+        graph_breaks=True,
+        guards=True,
+        recompiles=True,
+        recompiles_verbose=True,
+        output_code=True,
+        graph_code=True,
+        graph=True,
+    )
+    torch._logging._init_logs(file)
+
+    loggers = logging.Logger.manager.loggerDict.keys()
+    for logger_name in loggers:
+        if logger_name.startswith("torch"):
+            logger = logging.getLogger(logger_name)
+            if isinstance(logger, logging.Logger):
+                handlers = logger.handlers
+                for handler in handlers:
+                    if isinstance(handler, logging.StreamHandler):
+                        logger.removeHandler(handler)
+
 
 torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
+torch._dynamo.config.capture_dynamic_output_shape_ops = True
+# torch._logging.set_logs(dynamo = logging.WARNING, inductor = logging.WARNING)
+# torch._dynamo.config.verbose = True
 
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -58,6 +88,8 @@ def main(
 ) -> None:
     """Generates text samples based on a pre-trained Transformer model and tokenizer."""
     assert checkpoint_path.is_file(), checkpoint_path
+
+    # pytorch_logs_to_file()
 
     tokenizer_path = checkpoint_path.parent / "tokenizer.model"
     if not tokenizer_path.is_file():
@@ -99,12 +131,7 @@ def main(
     model_size = get_model_size(model)
     print(f"{model_size / 1e9:.02f} billion parameters in model.")
 
-    if compile:
-        global decode_one_token, prefill
-        decode_one_token = torch.compile(
-            decode_one_token, mode="reduce-overhead", fullgraph=True
-        )
-        prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
+    prefill, decode_one_token = compile_funcs(compile)
 
     aggregate_metrics = {
         "tokens_per_sec": [],
@@ -130,6 +157,8 @@ def main(
         y, _ = generate(
             model,
             inputs[0],
+            prefill,
+            decode_one_token,
             max_new_tokens=max_new_tokens,
             terminator_ids=terminator_ids,
             attn_top_k=attn_top_k,
@@ -147,6 +176,7 @@ def main(
     print(tokenizer.decode(y.tolist()))
     tokens_generated = y.size(0) - max_prompt_length
     tokens_sec = tokens_generated / t
+
     aggregate_metrics["tokens_per_sec"].append(tokens_sec)
     print(f"Time for inference: {t:.02f} sec total, {tokens_sec:.02f} tokens/sec")
     print(f"Tokens generated: {tokens_generated}")
@@ -157,6 +187,9 @@ def main(
         f"Average tokens/sec: {torch.mean(torch.tensor(aggregate_metrics['tokens_per_sec'])).item():.2f}"
     )
     print(f"Memory used: {torch.cuda.max_memory_reserved() / 1e9:.02f} GB")
+    
+    print("Cache Statistics:")
+    print(model.get_cache_stats(max_prompt_length, tokens_generated))
 
 
 if __name__ == "__main__":

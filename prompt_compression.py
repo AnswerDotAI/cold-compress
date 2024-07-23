@@ -27,6 +27,25 @@ class PromptCompressor(ABC):
         pass
 
 
+class PromptCompressorFull(PromptCompressor):
+    """
+    This is a dummy (pass through) method which returns its inputs
+    """
+
+    def __init__(self, head_specific, **kwargs) -> None:
+        super().__init__(head_specific, **kwargs)
+
+    def is_compatible(self) -> bool:
+        # Can be used with any cache
+        return True
+
+    def requires_attn(self) -> bool:
+        return False
+
+    def __call__(self, input_pos, k_val, v_val, **kwargs):
+        return input_pos, k_val, v_val, None
+
+
 class PromptCompressorRandom(PromptCompressor):
     def __init__(self, head_specific, **kwargs) -> None:
         super().__init__(head_specific, **kwargs)
@@ -38,24 +57,27 @@ class PromptCompressorRandom(PromptCompressor):
     def requires_attn(self) -> bool:
         return False
 
-    def __call__(self, input_pos, k_val, v_val):
+    def __call__(self, input_pos, k_val, v_val, **kwargs):
         seq_len = input_pos.shape[0]
         global_idxs = torch.arange(self.global_tokens, device=input_pos.device)
-        rand_idxs = (
+        full_middle_n = seq_len - self.global_tokens - self.recent_window
+        filt_middle_n = self.max_cache_length - self.global_tokens - self.recent_window
+        rand_middle_idxs = (
             (
                 self.global_tokens
-                + torch.randperm(seq_len - self.global_tokens, device=input_pos.device)[
-                    : self.max_cache_length - self.global_tokens
-                ]
+                + torch.randperm(full_middle_n, device=input_pos.device)[:filt_middle_n]
             )
             .sort()
             .values
         )
-        keep_idxs = torch.cat([global_idxs, rand_idxs], dim=0)
+        recent_idxs = torch.arange(
+            seq_len - self.recent_window, seq_len, device=input_pos.device
+        )
+        keep_idxs = torch.cat([global_idxs, rand_middle_idxs, recent_idxs], dim=0)
         assert len(keep_idxs) == self.max_cache_length
         k_val = k_val[:, :, keep_idxs]
         v_val = v_val[:, :, keep_idxs]
-        return keep_idxs, k_val, v_val
+        return keep_idxs, k_val, v_val, None
 
 
 class PromptCompressorRecentGlobal(PromptCompressor):
@@ -69,7 +91,7 @@ class PromptCompressorRecentGlobal(PromptCompressor):
     def requires_attn(self) -> bool:
         return False
 
-    def __call__(self, input_pos, k_val, v_val):
+    def __call__(self, input_pos, k_val, v_val, **kwargs):
         # [global; ...; window - global] --> [global; window - global]
         # Indices for first global_tokens tokens and last (window - global_tokens) tokens
         # Making this a tensor seems to give a speedup, but I haven't fully benchmarked
@@ -87,7 +109,7 @@ class PromptCompressorRecentGlobal(PromptCompressor):
         assert len(keep_idxs) == self.max_cache_length
         k_val = k_val[:, :, keep_idxs]
         v_val = v_val[:, :, keep_idxs]
-        return keep_idxs, k_val, v_val
+        return keep_idxs, k_val, v_val, None
 
 
 class PromptCompressorHeavyHitter(PromptCompressor):
@@ -117,7 +139,9 @@ class PromptCompressorHeavyHitter(PromptCompressor):
     def requires_attn(self) -> bool:
         return True
 
-    def __call__(self, input_pos, k_val, v_val, attn):
+    def __call__(self, input_pos, k_val, v_val, **kwargs):
+        attn = kwargs.pop("attn")
+
         seq_len = input_pos.shape[0]
         obs_len = min(self.observation_len, seq_len)
 
@@ -125,7 +149,6 @@ class PromptCompressorHeavyHitter(PromptCompressor):
         prev_shape = priority.shape
 
         # We'll be returning the attention history so we need to keep a copy before it's modified
-        attn_history = priority.clone()
         priority = self.pool(priority)
         assert (
             priority.shape == prev_shape
@@ -138,13 +161,15 @@ class PromptCompressorHeavyHitter(PromptCompressor):
             priority.topk(self.max_cache_length, dim=-1).indices.sort(dim=-1).values
         )
 
-        attn_history = attn_history.gather(2, keep_idxs)
+        # Return average attention across prompt to insert into KV Cache's attention history tracker
+        cum_attn = attn.sum(dim=2) / (seq_len - input_pos)
+        cum_attn = cum_attn.gather(2, keep_idxs)
 
         keep_idxs_rep = keep_idxs.unsqueeze(-1).expand(-1, -1, -1, k_val.shape[-1])
         k_val_compressed = k_val.gather(2, keep_idxs_rep)
         v_val_compressed = v_val.gather(2, keep_idxs_rep)
 
-        return keep_idxs.squeeze(0), k_val_compressed, v_val_compressed, attn_history
+        return keep_idxs.squeeze(0), k_val_compressed, v_val_compressed, cum_attn
 
 
 class PromptCompressorL2(PromptCompressor):
@@ -157,7 +182,7 @@ class PromptCompressorL2(PromptCompressor):
     def requires_attn(self) -> bool:
         return False
 
-    def __call__(self, input_pos, k_val, v_val):
+    def __call__(self, input_pos, k_val, v_val, **kwargs):
         key_norm = torch.linalg.vector_norm(k_val, ord=2, dim=-1)
 
         # Give low score to global and recent tokens
@@ -181,35 +206,9 @@ class PromptCompressorL2(PromptCompressor):
         return keep_idxs, k_val_compressed, v_val_compressed
 
 
-class PromptCompressorKeepItOdd(PromptCompressor):
-    def __init__(self, head_specific, **kwargs) -> None:
-        super().__init__(head_specific, **kwargs)
-
-    def is_compatible(self) -> bool:
-        # Can be used with any cache
-        return True
-
-    def requires_attn(self) -> bool:
-        return False
-
-    def idxs_to_save(self, input_pos):
-        odd_idxs = torch.argwhere(
-            torch.logical_or(input_pos < self.global_tokens, input_pos % 2 == 1)
-        ).squeeze(1)
-        remove_middle_n = max(len(odd_idxs) - self.max_cache_length, 0)
-        if remove_middle_n > 0:
-            odd_idxs = odd_idxs[remove_middle_n // 2 : -remove_middle_n // 2]
-            assert len(odd_idxs) == self.max_cache_length
-        return odd_idxs
-
-    def __call__(self, input_pos, k_val, v_val):
-        keep_idxs = self.idxs_to_save(input_pos)
-        k_val = k_val[:, :, keep_idxs]
-        v_val = v_val[:, :, keep_idxs]
-        return keep_idxs, k_val, v_val
-
-
-def prompt_compressor_constructor(strategy):
+def get_prompt_compressor_constructor(strategy):
+    if strategy == "full":
+        return PromptCompressorFull
     if strategy == "recent_global":
         return PromptCompressorRecentGlobal
     elif strategy == "heavy_hitter":
@@ -218,7 +217,5 @@ def prompt_compressor_constructor(strategy):
         return PromptCompressorL2
     elif strategy == "random":
         return PromptCompressorRandom
-    elif strategy == "keep_it_odd":
-        return PromptCompressorKeepItOdd
     else:
         raise ValueError(f"Unknown prompt compression strategy: {strategy}")

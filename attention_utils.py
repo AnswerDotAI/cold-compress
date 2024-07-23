@@ -14,7 +14,6 @@ def scaled_dot_product_attention(
     scale=None,
     return_attn=False,
     attn_top_k=1.0,
-    **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor | None]:
     """
     Uses naive PyTorch sdpa implementation if we need to return_attn. Otherwise use the optimized version.
@@ -52,5 +51,4 @@ def scaled_dot_product_attention(
 
     attn_prob = torch.softmax(attn_weight, dim=-1)
     attn_prob = torch.dropout(attn_prob, dropout_p, train=True)
-    return_logits = kwargs.get("return_attn_logits", False)
-    return attn_prob @ value, attn_weight if return_logits else attn_prob
+    return attn_prob @ value, attn_prob
