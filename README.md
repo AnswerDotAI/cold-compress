@@ -48,7 +48,7 @@ python generate.py --compile --cache_strategy full --prompt "What is a cold comp
 This will generate a response from a compiled Llama-3 with no cache compression (`--cache_strategy full`).
 If you want to run on longer prompts, you can add it as a *.txt* file to `./prompts` and run with `python generate.py --prompt my_custom_prompt.txt`. We've also pre-populated `prompts` with a few diverse prompts!
 
-### Generating with Compression
+## Generating with Compression
 
 ![Flow of Information between model and KV Cache](images/kv_cache_flow.png)
 *Capturing the flow of information between a model (attention) and the KV Cache.*
@@ -107,7 +107,7 @@ Use `generate.py` to vibe test methods on individual prompts.
 For benchmarking, use `eval.py` which supports evals on a *growing* list of long-context tasks: domain-specific ([Dolomites](https://dolomites-benchmark.github.io/index.html)), synthetic ([RULER](https://arxiv.org/abs/2404.06654)), QA ([MuSiQue](https://arxiv.org/abs/2108.00573v3), [TriviaQA](https://nlp.cs.washington.edu/triviaqa/), [QuALITY](https://arxiv.org/abs/2112.08608)), coding ([RepoBench](https://arxiv.org/abs/2306.03091)), summarization ([QMSum](https://arxiv.org/abs/2104.05938), [SQuALITY](https://arxiv.org/abs/2205.11465)), and long generation ([PG-19 book corpus](https://github.com/google-deepmind/pg19)).
 
 ```
-python eval.py –cache_config hybrid –tasks dolomites rulerniah
+python eval.py --compile --cache_config hybrid --tasks dolomites rulerniah
 ```
 
 Will apply the cache strategy specified in `./cache_configs/hybrid.yaml` and test on Dolomites and RULER needle-in-a-haystack.
@@ -168,6 +168,21 @@ python parallelize_evals.py \
     --command_file experiments/eval_jobs.txt 
     --num_gpus 8
 ```
+
+### Handling Long Prompts
+
+Prompts are processed in parallel with full self-attention.  If `|prompt| > max_cache_length`, a **PromptCompressor** from `prompt_compression.py` removes `|prompt| - max_cache_length` tokens before pre-filling the cache.
+
+If the |prompt| greatly exceeds the number of generated tokens, the impact of `PromptCompressor` strategy can dominate the results.
+
+If you would like to focus on the impact of the `KVCache` strategy instead, you can run evals with `--feed_long_prompts`:
+
+```
+python eval.py --compile --cache_config hybrid --tasks dolomites rulerniah --feed_long_prompts
+```
+
+This will prefill the KV cache with the first `max_cache_length` prompt tokens before "feeding" the remaining `|prompt| - max_cache_length` to the decoder one-by-one.  This will result in evictions being handled solely by the **KVCache** and not the **PromptCompressor**. This will reduce peak memory yet greatly slow down inference due to not fully parallelizing the prompt encoding. So, we recommend this flag purely for debugging.
+
 ## Advanced Usage
 
 ### Multi-Strategy
@@ -186,7 +201,7 @@ In addition to using multi-query attention (MQA), they introduce two modificatio
 In **Cold Compress**, **Local-Global** is just a mix of cache strategies (`RecentGlobal` and `Full`) across layers:
 
 ```
-python eval.py –compile –cache_config local_global.yaml
+python eval.py --compile --cache_config local_global.yaml
 ```
 
 Which sets the following args:
@@ -229,12 +244,12 @@ The value passed for `--max_cache_length` represents the average cache size for 
 The default for cache length pattern is tile, which tiles the cache size pattern provided to match the model depth.
 
 ```
-python eval.py --cache_strategy recent_global --max_cache_length 0.1 0.5 –cache_length_pattern tile
+python eval.py --compile --cache_strategy recent_global --max_cache_length 0.1 0.5 –cache_length_pattern tile
 ```
 Assigns a cache size of `0.1` to the first `L // 2` layers and `0.5` to the second half.  To alternate, set:
 
 ```
-python eval.py --cache_strategy recent_global --max_cache_length 0.1 0.5 –cache_length_pattern repeat
+python eval.py --compile --cache_strategy recent_global --max_cache_length 0.1 0.5 –cache_length_pattern repeat
 ```
 
 You can kick off a pre-defined set of experiments for length customization by running
@@ -375,6 +390,26 @@ The prompt compressor is responsible for filtering the prompt down to the max ca
 
 Here, we’ve decided to filter out tokens [in the middle](https://arxiv.org/abs/2307.03172) to fit our cache budget.
 
+This new strategy can now be used from the command line:
+
+```
+python eval.py --compile --cache_strategy keep_it_odd --prompt_compression_strategy keep_it_odd --max_cache_length 0.5
+```
+
+To avoid passing in arguments to the command line each time, you can write a `./cache_configs/keep_it_odd.yaml` file:
+
+```
+cache_strategy: ["keep_it_odd"]
+prompt_compression_strategy: ["keep_it_odd"]
+max_cache_length: [0.5]
+```
+
+And run with just:
+
+```
+python eval.py --compile --cache_config keep_it_odd
+```
+
 ### Adding a new Task
 
 We’ve supported several long context benchmarks and are continuing to add tasks.
@@ -432,7 +467,7 @@ TASK_MAPPING = {
 }
 ```
 
-**That’s it!** The task is now available as a command-line arg via `python eval.py --tasks cnndm`.
+**That’s it!** The task is now available as a command-line arg via `python eval.py --compile --tasks cnndm`.
 
 # Getting Involved
 
