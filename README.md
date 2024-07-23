@@ -20,7 +20,19 @@ Our initial release (**Cold Compress 1.0**) supports a wide set of popular appro
 The intended effect is that **Cold Compress** is easy to follow, customizable from the command line, and low effort to extend! The code should be able to be configured or slightly tweaked to exactly match existing methods.
 
 ## Installation
-[Download PyTorch nightly](https://pytorch.org/get-started/locally/)
+
+First, either manually [download PyTorch nightly](https://pytorch.org/get-started/locally/), nvcc, and friends.
+
+(Alternatively, you can install everything which is needed by creating a fresh conda environment and running the following command:
+
+```bash
+conda install python=3.10.12 cuda-nvcc pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+```
+
+That is all.)
+
+Second, pip install these requirements:
+
 ```bash
 pip install packaging ninja
 MAX_JOBS=8 pip install flash-attn --no-build-isolation # Set MAX_JOBS to a lower value if you get OOM errors.
