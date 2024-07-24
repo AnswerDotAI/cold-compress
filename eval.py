@@ -15,7 +15,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Optional, List
-from collections import defaultdict
+from collections import defaultdict, Counter
 from tqdm.auto import tqdm
 
 import torch
@@ -65,6 +65,14 @@ def flatten_dict(in_dict: dict) -> dict:
     return out_dict
 
 
+def compress_list(l):
+    if len(l) < 3:
+        return l
+    else:
+        counter = Counter(l)
+        return [f"{k}x{v}" for k, v in counter.items()]
+
+
 def args_to_str(args):
     if "debug" in args.cache_strategy[0]:
         debug_suffix = "__debug"
@@ -108,7 +116,7 @@ def args_to_str(args):
         "__".join(
             sorted(
                 [
-                    f"{k}=" + ",".join([str(process_num(m)) for m in v])
+                    f"{k}=" + ",".join(compress_list([str(process_num(m)) for m in v]))
                     if type(v) == list
                     else f"{k}={process_num(v)}"
                     for k, v in args_dict.items()
@@ -428,7 +436,7 @@ def setup(args) -> Path:
         Path(__file__).parent
         / "results"
         / args.checkpoint_path.parent.name
-        / "__".join(args.cache_strategy)
+        / "__".join(compress_list(args.cache_strategy))
         / args_to_str(args)
     )
 
