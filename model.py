@@ -5,8 +5,9 @@
 # LICENSE file in the root directory of this source tree.
 from dataclasses import dataclass
 from collections import defaultdict
-from typing import Optional
+from typing import Optional, Dict, Any
 
+import math
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -36,6 +37,7 @@ class ModelArgs:
     norm_eps: float = 1e-5
     attention_bias: bool = False
     max_length: int = 4096
+    rope_scaling: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -118,6 +120,24 @@ transformer_configs = {
         vocab_size=128256,
         rope_base=500000,
         max_length=8192,
+    ),
+    "Meta-Llama-3.1-8B-Instruct": dict(
+        block_size=131072,
+        n_layer=32,
+        n_head=32,
+        n_local_heads=8,
+        dim=4096,
+        intermediate_size=14336,
+        vocab_size=128256,
+        rope_base=500000,
+        max_length=131072,
+        rope_scaling={
+            "factor": 8.0,
+            "low_freq_factor": 1.0,
+            "high_freq_factor": 4.0,
+            "original_max_position_embeddings": 8192,
+            "rope_type": "llama3",
+        },
     ),
     "Qwen2-1.5B-Instruct": dict(
         block_size=32768,
@@ -217,6 +237,7 @@ class Transformer(nn.Module):
             self.config.dim // self.config.n_head,
             self.config.rope_base,
             dtype,
+            self.config.rope_scaling,
         )
 
     def reset_caches(self):
@@ -405,12 +426,46 @@ class RMSNorm(nn.Module):
 
 
 def precompute_freqs_cis(
-    seq_len: int, n_elem: int, base: int = 10000, dtype: torch.dtype = torch.bfloat16
+    seq_len: int,
+    n_elem: int,
+    base: int = 10000,
+    dtype: torch.dtype = torch.bfloat16,
+    rope_scaling: Optional[Dict[str, Any]] = None,
 ) -> Tensor:
     freqs = 1.0 / (
         base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem)
     )
     t = torch.arange(seq_len, device=freqs.device)
+    if rope_scaling is not None:
+        assert (
+            rope_scaling["rope_type"] == "llama3"
+        ), "Only Llama 3.1 scaling is supported"
+        # Apply Llama 3.1 scaling
+        low_freq_wavelen = (
+            rope_scaling["original_max_position_embeddings"]
+            / rope_scaling["low_freq_factor"]
+        )
+        high_freq_wavelen = (
+            rope_scaling["original_max_position_embeddings"]
+            / rope_scaling["high_freq_factor"]
+        )
+        new_freqs = []
+        for freq in freqs:
+            wavelen = 2 * math.pi / freq
+            if wavelen < high_freq_wavelen:
+                new_freqs.append(freq)
+            elif wavelen > low_freq_wavelen:
+                new_freqs.append(freq / rope_scaling["factor"])
+            else:
+                smooth = (
+                    rope_scaling["original_max_position_embeddings"] / wavelen
+                    - rope_scaling["low_freq_factor"]
+                ) / (rope_scaling["high_freq_factor"] - rope_scaling["low_freq_factor"])
+                new_freqs.append(
+                    (1 - smooth) * freq / rope_scaling["factor"] + smooth * freq
+                )
+        freqs = torch.tensor(new_freqs, device=t.device)
+
     freqs = torch.outer(t, freqs)
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
     cache = torch.stack([freqs_cis.real, freqs_cis.imag], dim=-1)
