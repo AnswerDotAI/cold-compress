@@ -1,1 +1,2 @@
 cache_strategy: ["full"]
+prompt_compression_strategy: ["full"]

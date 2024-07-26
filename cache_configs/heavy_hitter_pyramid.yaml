@@ -4,7 +4,5 @@ cache_length_pattern: "pyramid"  # More compression at higher layers
 global_tokens: 4
 recent_window: 10
 history_window_size: 400
-drop_amount: 0
 attn_thresholding: False
-attn_record_freq: 1
 max_cache_length: [1024]

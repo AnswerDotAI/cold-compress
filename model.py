@@ -15,6 +15,8 @@ from torch.nn import functional as F
 
 from attention_utils import scaled_dot_product_attention
 from cache import get_cache_constructor
+from prompt_compression import get_prompt_compressor_constructor
+from functorch.experimental.control_flow import cond
 
 
 def find_multiple(n: int, k: int) -> int:
@@ -216,7 +218,6 @@ class Transformer(nn.Module):
             # Only pass in the kwargs we need for the cache we chose (useful especially for debugging)
             layerwise_keys = {
                 "max_cache_length",
-                "drop_amount",
                 "recent_window",
                 "prompt_compression_strategy",
             }
@@ -231,6 +232,9 @@ class Transformer(nn.Module):
                 dtype,
                 **layer_kwargs,
             )
+            b.attention.prompt_compressor = get_prompt_compressor_constructor(
+                kwargs["prompt_compression_strategy"][layer_idx]
+            )(head_specific=b.attention.kv_cache.head_specific, **layer_kwargs)
 
         self.freqs_cis = precompute_freqs_cis(
             self.config.block_size,
@@ -243,6 +247,12 @@ class Transformer(nn.Module):
     def reset_caches(self):
         for layer in self.layers:
             layer.attention.kv_cache.reset()
+
+    def prompt_cache_overflow(self, prompt_length: int):
+        return [
+            prompt_length > layer.attention.kv_cache.max_cache_length
+            for layer in self.layers
+        ]
 
     def get_cache_stats(self, prompt_len, gen_len):
         stats = {}
@@ -270,7 +280,8 @@ class Transformer(nn.Module):
     def forward(
         self,
         idx: Tensor,
-        input_pos: Optional[Tensor] = None,
+        input_pos: Tensor,
+        is_prefill: Tensor,
         mask: Optional[Tensor] = None,
         attn_top_k: Optional[float] = 1.0,
     ) -> Tensor:
@@ -279,7 +290,15 @@ class Transformer(nn.Module):
         x = self.tok_embeddings(idx)
 
         for i, layer in enumerate(self.layers):
-            x = layer(x, idx, input_pos, freqs_cis, mask, attn_top_k=attn_top_k)
+            x = layer(
+                x,
+                idx,
+                input_pos,
+                is_prefill,
+                freqs_cis,
+                mask,
+                attn_top_k=attn_top_k,
+            )
         x = self.norm(x)
         logits = self.output(x)
         return logits
@@ -302,6 +321,7 @@ class TransformerBlock(nn.Module):
         x: Tensor,
         input_ids: Tensor,
         input_pos: Tensor,
+        is_prefill: Tensor,
         freqs_cis: Tensor,
         mask: Tensor,
         attn_top_k: Optional[float] = 1.0,
@@ -311,6 +331,7 @@ class TransformerBlock(nn.Module):
             input_ids,
             freqs_cis,
             mask,
+            is_prefill,
             input_pos,
             attn_top_k=attn_top_k,
         )
@@ -328,6 +349,7 @@ class Attention(nn.Module):
         self.wqkv = nn.Linear(config.dim, total_head_dim, bias=config.attention_bias)
         self.wo = nn.Linear(config.dim, config.dim, bias=False)
         self.kv_cache = None
+        self.prompt_compressor = None
 
         self.n_head = config.n_head
         self.head_dim = config.head_dim
@@ -342,12 +364,21 @@ class Attention(nn.Module):
             wv = state_dict.pop(prefix + "wv.weight")
             state_dict[prefix + "wqkv.weight"] = torch.cat([wq, wk, wv])
 
+    def compress_prompt(self, input_pos, k_val, v_val, attn):
+        seq_len = input_pos.shape[0]
+        if self.kv_cache.max_cache_length < seq_len:
+            kwargs = {"attn": attn}
+            return self.prompt_compressor(input_pos, k_val, v_val, **kwargs)
+
+        return input_pos, k_val, v_val, attn
+
     def forward(
         self,
         x: Tensor,
         input_ids: Tensor,
         freqs_cis: Tensor,
         mask: Tensor,
+        is_prefill: bool,
         input_pos: Optional[Tensor] = None,
         attn_top_k: Optional[float] = 1.0,
     ) -> Tensor:
@@ -365,34 +396,43 @@ class Attention(nn.Module):
 
         q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
 
-        k, v, kv_mask, attn_callback = self.kv_cache.update(
-            input_pos, k, v, input_ids=input_ids
-        )
-
-        k_rep = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
-        v_rep = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
-        if kv_mask is not None:
+        kv_mask = None
+        if not is_prefill:
+            k, v, kv_mask = self.kv_cache.update_kv(
+                input_pos, k, v, is_prefill, input_ids=input_ids
+            )
             kv_mask = kv_mask.repeat_interleave(
                 self.n_head // self.n_local_heads, dim=1
             )
+
+        k_rep = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
+        v_rep = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
 
         y, attn = scaled_dot_product_attention(
             q,
             k_rep,
             v_rep,
-            attn_mask=mask if mask is not None else kv_mask,
+            attn_mask=kv_mask if mask is None else mask,
             dropout_p=0.0,
             attn_top_k=attn_top_k,
-            return_attn=attn_callback and attn_callback["func"] is not None,
-            **{} if attn_callback is None else attn_callback.get("kwargs", {}),
+            # Ask the cache if needs attention scores returned (we cannot use FlexAttention if so)
+            return_attn=self.kv_cache.return_attn(),
         )
 
-        if attn_callback:
-            # Mean pool over the grouped queries (average over self.n_head // self.n_local_heads)
+        if (
+            attn is not None
+        ):  # Mean pool over the grouped queries (average over self.n_head // self.n_local_heads)
             attn = attn.view(
                 bsz, self.n_local_heads, self.n_head // self.n_local_heads, seqlen, -1
             ).mean(dim=2)
-            attn_callback["func"](input_pos, input_ids, k, v, attn)
+
+        # Prefill updates happen after since we don't use the KV cache for prefill attention
+        if is_prefill:
+            input_pos, k, v, attn = self.compress_prompt(input_pos, k, v, attn)
+            self.kv_cache.update_kv(input_pos, k, v, is_prefill, input_ids)
+
+        # Update the KV Cache internal state now that we have (Optional) attention probabilities
+        self.kv_cache.update_state(input_pos, k, v, is_prefill, input_ids, attn=attn)
 
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 

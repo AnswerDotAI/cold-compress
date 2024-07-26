@@ -22,26 +22,26 @@ import torch
 import torch._dynamo.config
 import torch._inductor.config
 
-
 from cache import add_cache_arguments, cache_compatibility, get_cache_constructor
 from model import Transformer
 from generation_utils import (
     add_generation_arguments,
+    compile_funcs,
     compute_max_seq_length,
-    decode_one_token,
     device_sync,
     get_cache_stats,
     merge_cache_config,
-    prefill,
     reset_caches,
     setup_caches,
 )
 from tokenizer import encode, TokenizerInterface
 
-
 torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
+# import logging
+# torch._logging.set_logs(dynamo = logging.DEBUG, inductor = logging.DEBUG)
+# torch._dynamo.config.verbose = True
 
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -132,6 +132,8 @@ def run_task(
     args: argparse.Namespace,
     task: AutoTask,
     model: Transformer,
+    prefill: callable,
+    decode_one_token: callable,
     tokenizer: TokenizerInterface,
     is_chat: bool = False,
     profile: Optional[Path] = None,
@@ -208,6 +210,8 @@ def run_task(
             y, probs = generate(
                 model,
                 input,
+                prefill,
+                decode_one_token,
                 max_new_tokens=max_new_tokens,
                 next_tokens=next_tokens,
                 terminator_ids=terminator_ids if next_tokens is None else None,
@@ -305,6 +309,11 @@ def main(
     """Generates text samples based on a pre-trained Transformer model and tokenizer."""
     assert checkpoint_path.is_file(), checkpoint_path
 
+    # Uncomment to debug torch.compile -- dump all logs to file
+    # from generate import pytorch_logs_to_file
+    # import logging
+    # pytorch_logs_to_file()
+
     tokenizer_path = checkpoint_path.parent / "tokenizer.model"
     if not tokenizer_path.is_file():
         # If there's no tokenizer.model, try to load the tokenizer from the parent directory
@@ -348,13 +357,6 @@ def main(
 
     torch.manual_seed(1234)
 
-    if compile:
-        global decode_one_token, prefill
-        decode_one_token = torch.compile(
-            decode_one_token, mode="reduce-overhead", fullgraph=True
-        )
-        prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
-
     task_kwargs = {
         "model_max_length": model.config.max_length,
         "num_samples": args.num_samples,
@@ -378,10 +380,13 @@ def main(
             with open(task_out_fn, "r") as fd:
                 task_metrics[task_name] = json.load(fd)
         else:
+            prefill, decode_one_token = compile_funcs(compile)
             task_metrics[task_name], predictions, task_args = run_task(
                 args,
                 task,
                 model,
+                prefill,
+                decode_one_token,
                 tokenizer,
                 is_chat,
                 profile,

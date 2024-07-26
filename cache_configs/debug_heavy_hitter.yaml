@@ -1,4 +1,4 @@
-cache_strategy: ["heavy_hitter"]
+cache_strategy: ["debug_heavy_hitter"]
 prompt_compression_strategy: ["heavy_hitter"]
 global_tokens: 4
 recent_window: 10
