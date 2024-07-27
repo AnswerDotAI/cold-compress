@@ -245,7 +245,7 @@ class KVCache(ABC, nn.Module):
     def return_kv_cache(self):
         return self.k_cache, self.v_cache, self.mask
 
-    def update_kv(self, input_pos, k_val, v_val, is_prefill, input_ids=None):
+    def update_kv(self, input_pos, k_val, v_val, is_prefill, **kwargs):
         """
         Cache-specific update logic.
         Takes in the input positions and the corresponding k and v values.
@@ -255,9 +255,9 @@ class KVCache(ABC, nn.Module):
         None is equivalent to 0.
         """
         if is_prefill:
-            num_insertions = self._prefill_update(input_pos, k_val, v_val, input_ids)
+            num_insertions = self._prefill_update(input_pos, k_val, v_val, **kwargs)
         else:
-            num_insertions = self._decoding_update(input_pos, k_val, v_val, input_ids)
+            num_insertions = self._decoding_update(input_pos, k_val, v_val, **kwargs)
         self.cache_cts += num_insertions[: len(self.cache_cts)]
 
         # [Optional] Update any internal model state
@@ -266,17 +266,17 @@ class KVCache(ABC, nn.Module):
         )  # By default, just returns self.k_cache, self.v_cache, self.mask
         return k, v, mask
 
-    def update_state(self, input_pos, k, v, is_prefill, input_ids, attn=None):
+    def update_state(self, *args, **kwargs):
         """
         Optional method to update cache-specific internal state (excludes self.k_cache, self.v_cache, and self.pos).
         """
         pass
 
-    def _decoding_update(self, input_pos, k_val, v_val, input_ids=None):
+    def _decoding_update(self, input_pos, k_val, v_val, **kwargs):
         """
         Decoding logic for the cache.
         """
-        eviction_idx = self._eviction_idx(input_pos, k_val, v_val, input_ids)
+        eviction_idx = self._eviction_idx(input_pos)
 
         # Num insertions means we inserted into an unfilled slot (previous pos == -1)
         # They should be all the same unless variable_length = True
@@ -290,8 +290,8 @@ class KVCache(ABC, nn.Module):
 
         return num_insertions
 
-    def _eviction_idx(self, input_pos, k_val, v_val, input_ids=None):
-        scores = self._token_importances(input_pos, k_val, v_val, input_ids)
+    def _eviction_idx(self, input_pos):
+        scores = self._token_importances(input_pos)
 
         if scores.ndim == 1:
             scores = scores.unsqueeze(0)
@@ -305,7 +305,7 @@ class KVCache(ABC, nn.Module):
         # Evict least important token
         return torch.argmin(scores, dim=-1)
 
-    def _prefill_update(self, input_pos, k_val, v_val, input_ids=None):
+    def _prefill_update(self, input_pos, k_val, v_val, **kwargs):
         input_pos = input_pos.int()
         fill_idxs = torch.arange(input_pos.shape[-1], device=input_pos.device)
         self._fill_contiguous(input_pos, k_val, v_val, fill_idxs=fill_idxs)
@@ -424,7 +424,7 @@ class KVCacheFull(KVCacheHeadConstant):
         self.global_tokens = 0  # No global tokens for full cache (they are all global)
         super().__init__(max_batch_size, n_heads, head_dim, dtype, **kwargs)
 
-    def _eviction_idx(self, input_pos, k_val, v_val, input_ids=None):
+    def _eviction_idx(self, input_pos):
         # Select the first unfilled slot
         return self.pos[0, 0].argmin().view(1)
 
@@ -442,7 +442,7 @@ class KVCacheRandom(KVCacheHeadConstant):
     ):
         super().__init__(max_batch_size, n_heads, head_dim, dtype, **kwargs)
 
-    def _token_importances(self, input_pos, k_val, v_val, input_ids=None):
+    def _token_importances(self, input_pos):
         # Assign random importance
         scores = torch.rand(self.max_cache_length, device=input_pos.device)
         # Protect Recent Tokens
@@ -474,7 +474,7 @@ class KVCacheRecentGlobal(KVCacheHeadConstant):
             **kwargs,
         )
 
-    def _eviction_idx(self, input_pos, k_val, v_val, input_ids=None):
+    def _eviction_idx(self, input_pos):
         return (
             torch.argmin(self.pos[:, :, self.global_tokens :], dim=-1)
             + self.global_tokens
@@ -497,7 +497,7 @@ class KVCacheL2(KVCacheHeadSpecific):
         key_norm_shape = (max_batch_size, n_heads, self.max_cache_length)
         self.register_buffer("key_norm", torch.zeros(key_norm_shape, dtype=dtype))
 
-    def _token_importances(self, input_pos, k_val, v_val, input_ids=None):
+    def _token_importances(self, input_pos):
         # 1. Lowest l2 norms have high importance (- self.key_norm)
         # 2. Lowest score needs to be > -1 : we evict unfilled tokens first (+ max value such that min score is 0)
         # 3. Save Recent Window (+ inf)
@@ -507,7 +507,7 @@ class KVCacheL2(KVCacheHeadSpecific):
             .squeeze(0)
         )
 
-    def update_state(self, input_pos, k_val, v_val, is_prefill, input_ids, attn=None):
+    def update_state(self, input_pos, k_val, v_val, is_prefill, attn, **kwargs):
         if is_prefill:
             self.key_norm = torch.linalg.vector_norm(self.k_cache, ord=2, dim=-1)
         else:
@@ -587,7 +587,7 @@ class KVCacheHeavyHitter(KVCacheHeadSpecific):
     def return_attn(self) -> bool:
         return True
 
-    def update_state(self, input_pos, k_val, v_val, is_prefill, input_ids, attn=None):
+    def update_state(self, input_pos, k_val, v_val, is_prefill, attn, **kwargs):
         """
         Insert the most recent attention into the history buffer.
 
@@ -618,7 +618,7 @@ class KVCacheHeavyHitter(KVCacheHeadSpecific):
         self.attn_history_denom += 1
         self.attn_counter += 1
 
-    def _eviction_idx(self, input_pos, k_val, v_val, input_ids=None):
+    def _eviction_idx(self, input_pos):
         # Identify the tokens with consistently "low" attentions
         numerator = self.attn_history_num.sum(dim=-1).float()
         # The denominator is the number of times this token's history has been recorded
@@ -846,7 +846,8 @@ class KVCacheHybrid(KVCacheHeavyHitter):
             self.punc_mask.zero_()
             self.num_punc.zero_()
 
-    def _decoding_update(self, input_pos, k_val, v_val, input_ids=None):
+    def _decoding_update(self, input_pos, k_val, v_val, **kwargs):
+        input_ids = kwargs.get("input_ids")
         n_heads = k_val.shape[1]
 
         is_punc = (
@@ -1017,7 +1018,8 @@ class KVCacheHybrid(KVCacheHeavyHitter):
             masks.append(strat_mask)
         return torch.stack(masks)
 
-    def profile_attn_heads(self, input_pos, input_ids, attn):
+    def profile_attn_heads(self, input_pos, attn, **kwargs):
+        input_ids = kwargs["input_ids"]
         input_ids = input_ids.squeeze(0)
         seq_len = input_ids.shape[-1]
 
@@ -1067,10 +1069,11 @@ class KVCacheHybrid(KVCacheHeavyHitter):
 
         return cache_strategies, special_mask, punc_mask, mask_optimal, cum_attn
 
-    def profile_and_update(self, input_pos, k_val, v_val, input_ids, attn):
+    def profile_and_update(self, input_pos, k_val, v_val, attn, **kwargs):
         """
         Profile the attention heads to determine the optimal KV-cache allocation.
         """
+        input_ids = kwargs["input_ids"]
         input_ids = input_ids.squeeze(0)
         seq_len = input_ids.shape[-1]
         n_heads = attn.shape[1]
@@ -1078,7 +1081,7 @@ class KVCacheHybrid(KVCacheHeavyHitter):
 
         # Profile cache attention heads to define strategy for each head
         self.cache_strategies, special_mask, punc_mask, mask_optimal, cum_attn = (
-            self.profile_attn_heads(input_pos, input_ids, attn)
+            self.profile_attn_heads(input_pos, attn, **kwargs)
         )
 
         # Uncomment to show which strategies are selected
@@ -1148,15 +1151,10 @@ class KVCacheHybrid(KVCacheHeavyHitter):
             # Update attention mask to indicate which we attentions are allowed.
             cum_attn = cum_attn.gather(1, order).unsqueeze(0)
             super().update_state(
-                input_pos,
-                k_val,
-                v_val,
-                is_prefill=True,
-                input_ids=input_ids,
-                attn=cum_attn,
+                input_pos, k_val, v_val, is_prefill=True, attn=cum_attn, **kwargs
             )
 
-    def update_state(self, input_pos, k_val, v_val, is_prefill, input_ids, attn=None):
+    def update_state(self, input_pos, k_val, v_val, is_prefill, attn, **kwargs):
         """
         Insert the most recent attention into the history buffer.
 
@@ -1164,11 +1162,11 @@ class KVCacheHybrid(KVCacheHeavyHitter):
         """
         # We handle state updating during prefill for Hybrid as part of the profile and update stage
         if is_prefill:
-            self.profile_and_update(input_pos, k_val, v_val, input_ids, attn)
+            self.profile_and_update(input_pos, k_val, v_val, attn, **kwargs)
         elif (
             self.requires_heavy_hitter
         ):  # If none of the heads require attention, there's no state to update
-            super().update_state(input_pos, k_val, v_val, is_prefill, input_ids, attn)
+            super().update_state(input_pos, k_val, v_val, is_prefill, attn, **kwargs)
         else:
             assert attn is None, "Attn should be None if no attention is required."
 
@@ -1236,10 +1234,8 @@ class KVCacheAnalysis(KVCacheFull):
     def return_attn(self):
         return self.compressed.return_attn()
 
-    def update_kv(self, input_pos, k_val, v_val, is_prefill, input_ids=None):
-        k, v, mask = super().update_kv(
-            input_pos, k_val, v_val, is_prefill, input_ids=input_ids
-        )
+    def update_kv(self, input_pos, k_val, v_val, is_prefill, **kwargs):
+        k, v, mask = super().update_kv(input_pos, k_val, v_val, is_prefill, **kwargs)
         # Conditionally update the compressed cache if prompt < max_cache_length
 
         # If prompt is too long for compressed cache we will need to compress it in update_state before inserting.
@@ -1247,7 +1243,7 @@ class KVCacheAnalysis(KVCacheFull):
         can_update_compressed = input_pos.shape[-1] < self.compressed.max_cache_length
         if can_update_compressed:
             _, _, _ = self.compressed.update_kv(
-                input_pos, k_val, v_val, is_prefill, input_ids=input_ids
+                input_pos, k_val, v_val, is_prefill, **kwargs
             )
 
         return k, v, mask
@@ -1258,7 +1254,7 @@ class KVCacheAnalysis(KVCacheFull):
         self.attention_losses.fill_(-1)
         self.attention_loss_ctr.zero_()
 
-    def update_state(self, input_pos, k_val, v_val, is_prefill, input_ids, attn=None):
+    def update_state(self, input_pos, k_val, v_val, is_prefill, attn, **kwargs):
         # We might need to compress the prompt and update the compressed cache
         needs_prompt_compression = (
             is_prefill and input_pos.shape[-1] > self.compressed.max_cache_length
@@ -1268,18 +1264,12 @@ class KVCacheAnalysis(KVCacheFull):
             input_pos, k_val, v_val, attn = self.prompt_compressor(
                 input_pos, k_val, v_val, **kwargs
             )
-            _, _, _ = self.compressed.update_kv(
-                input_pos, k_val, v_val, is_prefill, input_ids=input_ids
-            )
-            self.compressed.update_state(
-                input_pos, k_val, v_val, is_prefill, input_ids, attn
-            )
+            _, _, _ = self.compressed.update_kv(input_pos, k_val, v_val, is_prefill)
+            self.compressed.update_state(input_pos, k_val, v_val, is_prefill, attn)
         elif is_prefill:
             # Don't record attention loss in prefill since compressed and non-compressed prefill attentions are the same
             # Just update the state for the compressed cache and return
-            self.compressed.update_state(
-                input_pos, k_val, v_val, is_prefill, input_ids, attn
-            )
+            self.compressed.update_state(input_pos, k_val, v_val, is_prefill, attn)
         else:
             assert not is_prefill
             indices = self.compressed.pos.clone().long()
@@ -1287,7 +1277,7 @@ class KVCacheAnalysis(KVCacheFull):
             indices[indices == -1] = attn.shape[-1] - 1
             attn_compressed = attn.squeeze(2).gather(2, indices)
             self.compressed.update_state(
-                input_pos, k_val, v_val, is_prefill, input_ids, attn_compressed
+                input_pos, k_val, v_val, is_prefill, attn_compressed
             )
 
             # Compute attention loss as the sum of the attention probabilities for evicted tokens
@@ -1304,7 +1294,7 @@ class KVCacheAnalysis(KVCacheFull):
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: The cache size, the number of tokens inserted, and the compression ratio.
         """
         stats = super().compute_statistics(seq_len)
-        losses = self.attention_losses[:self.attention_loss_ctr]
+        losses = self.attention_losses[: self.attention_loss_ctr]
         assert not torch.any(losses == -1)
         for k in range(500, len(losses), 500):
             stats[f"attention_loss@{k}"] = losses[:k].mean().item()

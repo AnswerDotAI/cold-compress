@@ -1,4 +1,5 @@
 import itertools
+import time
 from typing import Optional, Tuple
 from pathlib import Path
 
@@ -11,9 +12,40 @@ import argparse
 import yaml
 from model import Transformer, find_multiple
 from tokenizer import TokenizerInterface
-
+import regex as re
 
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def snake_to_capitalized(s):
+    return " ".join(word.capitalize() for word in s.split("_"))
+
+
+def print_stats(stats_dict):
+    # Separate the stats into layered and non-layered
+    layered_stats = {}
+    non_layered_stats = {}
+
+    for key, value in stats_dict.items():
+        parts = key.rsplit("_", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            stat = snake_to_capitalized(parts[0])
+            layer = int(parts[1])
+            if stat not in layered_stats:
+                layered_stats[stat] = []
+            layered_stats[stat].append((layer, value))
+        else:
+            non_layered_stats[snake_to_capitalized(key)] = value
+
+    # Print non-layered stats
+    for key, value in non_layered_stats.items():
+        print(f"{key}: {value:.02f}")
+
+    # Print layered stats
+    for stat in sorted(layered_stats.keys()):
+        layers_list = sorted(layered_stats[stat])
+        layers_str = ", ".join(f"{layer}={value:.02f}" for layer, value in layers_list)
+        print(f"{stat} By Layer: {layers_str}")
 
 
 def add_generation_arguments(parser: argparse.ArgumentParser):
@@ -430,6 +462,8 @@ def generate(
     seq[:prompt_length] = prompt
     input_pos = torch.arange(0, prompt_length, device=device)
 
+    t0 = time.perf_counter()
+
     ret = prefill(
         model,
         prompt.view(1, -1),
@@ -437,6 +471,11 @@ def generate(
         next_token=next_token,
         **sampling_kwargs,
     )
+
+    t1 = time.perf_counter()
+
+    prefill_seconds = t1 - t0
+
     next_token = ret[0].clone()
     next_tok_probs = ret[1].clone()
     seq[prompt_length] = next_token
@@ -453,6 +492,34 @@ def generate(
         attn_top_k=attn_top_k,
         **sampling_kwargs,
     )
+
+    t2 = time.perf_counter()
+    decode_seconds = t2 - t1
+
+    total_seconds = t2 - t0
+
+    prefill_tokens = prompt_length
+    decode_tokens = (
+        len(generated_tokens) + 1
+    )  # +1 because we generate 1 token from prefill
+
+    decode_toks_per_sec = decode_tokens / decode_seconds
+    prefill_toks_per_sec = prefill_tokens / prefill_seconds
+    total_toks_per_sec = decode_tokens / total_seconds
+
+    perf_stats = {
+        "prefill_tokens": prefill_tokens,
+        "decode_tokens": decode_tokens,
+        "prefill_toks_per_sec": prefill_toks_per_sec,
+        "decode_toks_per_sec": decode_toks_per_sec,
+        "total_toks_per_sec": total_toks_per_sec,
+        "total_seconds": total_seconds,
+        "prefill_seconds": prefill_seconds,
+        "decode_seconds": decode_seconds,
+        "decode_seconds_frac_of_total": decode_seconds / total_seconds,
+        "memory_used_gb": torch.cuda.max_memory_reserved() / 1e9,
+    }
+
     if len(generated_tokens) > 0:
         seq[prompt_length + 1 : prompt_length + 1 + len(generated_tokens)] = torch.cat(
             generated_tokens
@@ -462,7 +529,7 @@ def generate(
     if -1 in seq:
         seq = seq[: torch.where(seq == -1)[0][0]]
 
-    return seq, [next_tok_probs] + generated_tok_probs
+    return seq, [next_tok_probs] + generated_tok_probs, perf_stats
 
 
 def load_model(checkpoint_path, device, precision, use_tp):
