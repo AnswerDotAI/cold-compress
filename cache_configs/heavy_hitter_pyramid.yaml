@@ -3,6 +3,6 @@ prompt_compression_strategy: ["heavy_hitter"]
 cache_length_pattern: "pyramid"  # More compression at higher layers
 global_tokens: 4
 recent_window: 10
-history_window_size: 400
+history_window_size: 1  # If history_window_size is 1, then the history window is disabled (we use all historical attentions which is faster).
 attn_thresholding: False
 max_cache_length: [1024]

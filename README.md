@@ -6,7 +6,7 @@ Created at [Answer.AI](https://www.answer.ai/), **Cold Compress** is built on to
 
 ![KV Cache Compression Diagram](images/kv_cache_compression.png)
 
-Please see our [blog post](www.todo.com) for a *very* deep dive into the KV Cache, cache compression, and the *many* SOTA strategies supported by **Cold Compress**.
+Please see our [blog post](www.todo.com) for a *very* deep dive into the KV Cache, cache compression, and the many SOTA strategies supported by **Cold Compress**.
 
 Our initial release (**Cold Compress 1.0**) supports a wide set of popular approaches to KV cache compression, including:
 - Attention-based evictions, e.g., `Heavy Hitters`
@@ -21,7 +21,13 @@ The intended effect is that **Cold Compress** is easy to follow, customizable fr
 
 ## Installation
 
-First, either manually [download PyTorch nightly](https://pytorch.org/get-started/locally/), nvcc, and friends.
+First, manually [download PyTorch nightly](https://pytorch.org/get-started/locally/), nvcc, and friends.
+
+An example PyTorch pip command for CUDA 12.1:
+
+```
+pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu121
+```
 
 (Alternatively, you can install everything which is needed by creating a fresh conda environment and running the following command:
 
@@ -31,41 +37,56 @@ conda install python=3.10.12 cuda-nvcc pytorch torchvision torchaudio pytorch-cu
 
 That is all.)
 
-Second, pip install these requirements:
+Then, 
 
 ```bash
-pip install packaging ninja
-MAX_JOBS=8 pip install flash-attn --no-build-isolation # Set MAX_JOBS to a lower value if you get OOM errors.
 pip install -r requirements.txt
 ```
 
-After logging in with `huggingface-cli login`, run
+After logging in with `huggingface-cli login`, run any of the following:
 
 ```bash
-bash scripts/prepare_llama2.sh
+bash scripts/prepare_llama31.sh
 bash scripts/prepare_llama3.sh
+bash scripts/prepare_llama2.sh
 bash scripts/prepare_qwen2.sh
 ```
 
-This will download model and tokenizer files from HuggingFace for [`Meta-Llama-3-8B-Instruct`](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct), [`meta-llama/Llama-2-7b-chat-hf`](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf) and [`Qwen/Qwen2-7B-Instruct`](https://huggingface.co/Qwen/Qwen2-7B-Instruct) and save them into a usable format inside `./checkpoints`.
+This will download model and tokenizer files from HuggingFace for any one of [`Meta-Llama-3.1-8B-Instruct`](https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct), [`Meta-Llama-3-8B-Instruct`](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct), [`meta-llama/Llama-2-7b-chat-hf`](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf) or [`Qwen/Qwen2-7B-Instruct`](https://huggingface.co/Qwen/Qwen2-7B-Instruct) respectively and save them into a usable format inside `./checkpoints`.
 
 Please raise an [issue](https://github.com/AnswerDotAI/context-compression/issues) or join our [public Discord server](https://discord.gg/NvERJKrEdA) if you would like to see more models supported or collaborate on new releases.
 
 ## Quick Start
 
 ```
-python generate.py --compile --cache_strategy full --prompt "What is a cold compress?" --checkpoint_path ./checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth
+python generate.py --cache_strategy full --prompt "What is a cold compress?" --checkpoint_path ./checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth
 ```
 
-This will generate a response from a compiled Llama-3 with no cache compression (`--cache_strategy full`).
+This will generate a response from a compiled Llama-3.1 with no cache compression (`--cache_strategy full`).
 If you want to run on longer prompts, you can add it as a *.txt* file to `./prompts` and run with `python generate.py --prompt my_custom_prompt.txt`. We've also pre-populated `prompts` with a few diverse prompts!
+
+## Important Note on `--compile`
+
+You can also run `generate.py` with the `--compile` flag which will compile the `prefill` and `decoding` functions.
+
+Compilation takes a fairly long time (up to 5 minutes or more depending on the model), yet should only occur once or twice when generating multiple times.
+
+For large-scale benchmarking (`eval.py`), we recommend running with `--compile` for 2-3x speedup gains, but for `generate.py`, run without compile for quicker one-time generations.
+
+### Debugging Compile
+
+If you are noticing that `--compile` generations do not stabilize to a speed of about $70$ toks / second, there is likely an issue in your code that is causing excessive recompiles.
+
+To debug this, run your code with `TORCHLOGS=recompiles` to see what is causing the re-compilation.
+
+It can be tricky to get debug so please feel free to raise any issues in our [public Discord server](https://discord.gg/NvERJKrEdA) if inference times are slow or your code isn't compiling.
 
 ## Generating with Compression
 
 ![Flow of Information between model and KV Cache](images/kv_cache_flow.png)
 *Capturing the flow of information between a model (attention) and the KV Cache.*
 
-To use a compressed KV cache, specify a `cache_strategy != "full"`, e.g., `"recent_global"`, `"heavy_hitter"`, `"hybrid"`, `"random"`, `"l2"`.
+To use a compressed KV cache, specify a `--cache_strategy` other than  `"full"`, e.g., `"recent_global"`, `"heavy_hitter"`, `"hybrid"`, `"random"`, `"l2"`.
 
 Check out all the available cache strategies in `def get_cache_constructor` from `cache.py`.
 
@@ -83,18 +104,15 @@ class KVCacheRecentGlobal(KVCache):
     ]
 ```
 
-We can run
+We can run:
 
 ```
-python generate.py --compile --prompt reverse_list.txt --checkpoint_path ./checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth --cache_strategy recent_global --max_cache_length 0.5 --global_tokens 4 --prompt_compression_strategy recent_global
+python generate.py --prompt reverse_list.txt --checkpoint_path ./checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth --cache_strategy recent_global --max_cache_length 0.5 --global_tokens 4 --prompt_compression_strategy recent_global
 ```
 
-`max_cache_length`: size of the KV cache represented as a fraction of total sequence length (`|prompt| + max_new_tokens`). You can also specify `max_cache_length` as an integer `> 1` to set the exact size.
-
-`global_tokens`: the number of lead tokens to always keep in the KV cache. Lead tokens are [attention sinks](https://arxiv.org/abs/2309.17453) and should always be preserved.
-
-`prompt_compression_strategy`: the strategy for filtering tokens during prefill **iff** `|prompt| > max_cache_length`. Choose a strategy from `prompt_compression.py`. Here, we chose a strategy `recent_window` to match our KV Cache strategy.
-
+- `max_cache_length`: size of the KV cache represented as a fraction of total sequence length (`|prompt| + max_new_tokens`). You can also specify `max_cache_length` as an integer `> 1` to set the exact size.
+- `global_tokens`: the number of lead tokens to always keep in the KV cache. Lead tokens are [attention sinks](https://arxiv.org/abs/2309.17453) and should always be preserved.
+- `prompt_compression_strategy`: the strategy for filtering tokens during prefill **iff** `|prompt| > max_cache_length`. Choose a strategy from `prompt_compression.py`. Here, we chose a strategy `recent_global` to match our KV Cache strategy.
 
 ## Using a Cache Config
 
@@ -104,7 +122,7 @@ To avoid this, you can create a Cache Config *.yaml* file instead under `./cache
 
 We've pre-populated it with some configurations, including the `recent_global` strategy discussed above.
 
-**[`./cache_configs/recent_global.yaml`]((https://github.com/AnswerDotAI/cold-compress/blob/main/cache_configs/recent_global.yaml)**
+**[`./cache_configs/recent_global.yaml`](https://github.com/AnswerDotAI/cold-compress/blob/main/cache_configs/recent_global.yaml)**
 
 ```
 cache_strategy: ["recent_global"]
@@ -112,17 +130,33 @@ prompt_compression_strategy: ["recent_global"]
 global_tokens: 4
 ```
 
+We can then reduce the length of the above command:
+
+```
+python generate.py --prompt reverse_list.txt --checkpoint_path ./checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth --max_cache_length 0.5 --cache_config recent_global
+```
+
+This can come in handy for strategies with many more hyper-parameters!
+
 ## Benchmarking Performance
 
 Use `generate.py` to vibe test methods on individual prompts.
 
-For benchmarking, use `eval.py` which supports evals on a *growing* list of long-context tasks: domain-specific ([Dolomites](https://dolomites-benchmark.github.io/index.html)), synthetic ([RULER](https://arxiv.org/abs/2404.06654)), QA ([MuSiQue](https://arxiv.org/abs/2108.00573v3), [TriviaQA](https://nlp.cs.washington.edu/triviaqa/), [QuALITY](https://arxiv.org/abs/2112.08608)), coding ([RepoBench](https://arxiv.org/abs/2306.03091)), summarization ([QMSum](https://arxiv.org/abs/2104.05938), [SQuALITY](https://arxiv.org/abs/2205.11465)), and long generation ([PG-19 book corpus](https://github.com/google-deepmind/pg19)).
+For benchmarking, use `eval.py` which supports evals on a growing list of long-context tasks: domain-specific ([Dolomites](https://dolomites-benchmark.github.io/index.html)), synthetic ([RULER](https://arxiv.org/abs/2404.06654)), QA ([MuSiQue](https://arxiv.org/abs/2108.00573v3), [TriviaQA](https://nlp.cs.washington.edu/triviaqa/), [QuALITY](https://arxiv.org/abs/2112.08608)), coding ([RepoBench](https://arxiv.org/abs/2306.03091)), summarization ([QMSum](https://arxiv.org/abs/2104.05938), [SQuALITY](https://arxiv.org/abs/2205.11465)), and long generation ([PG-19 book corpus](https://github.com/google-deepmind/pg19)).
+
+Before running `eval.py`, make sure to set the `ANTHROPIC_API_KEY` environment variable if you want to use `LLM-ROUGE` (see below). Alternatively, comment out mentions of **LLM-Rouge** in `task.py`.
+
+```
+"LLM-Rouge": AutoMetric.from_name("llm-rouge"),
+```
+
+After doing this, you can run:
 
 ```
 python eval.py --compile --cache_config hybrid --tasks dolomites rulerniah
 ```
 
-Will apply the cache strategy specified in `./cache_configs/hybrid.yaml` and test on Dolomites and RULER needle-in-a-haystack.
+It will apply the cache strategy specified in `./cache_configs/hybrid.yaml` and test on Dolomites and RULER needle-in-a-haystack.
 
 `eval.py` creates a directory based on the supplied cache arguments to dump the raw predictions and metrics for memory usage and task-specific performance.
 
@@ -130,9 +164,9 @@ Will apply the cache strategy specified in `./cache_configs/hybrid.yaml` and tes
 
 *See `metric.py` for a full list of supported metrics*
 
-For multiple-choice QA, we measure accuracy by comparing the log likelihoods of generating each answer option, as in [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness).
+For multiple-choice QA, we measure accuracy by comparing the loglikelihoods of generating each answer option, as in [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness).
 
-For free-text generation, we record standard reference-based metrics, [ROUGE](https://huggingface.co/spaces/evaluate-metric/rouge) and [BERTScore](https://huggingface.co/spaces/evaluate-metric/bertscore). Yet, given well documented limitations of these metrics, we focus on a new metric `LLM-Rouge`. `LLM-Rouge` prompts an LLM ([Claude Haiku](https://www.anthropic.com/news/claude-3-haiku)) to judge the similarity of a model generated text with one or more ground-truths on a 1-5 LIKERT scale:
+For free-text generation, we record standard reference-based metrics, [ROUGE](https://huggingface.co/spaces/evaluate-metric/rouge) and [BERTScore](https://huggingface.co/spaces/evaluate-metric/bertscore). Yet, given well documented limitations of these metrics, we focus on a new metric `LLM-Rouge`. `LLM-Rouge` prompts an LLM ([Claude 3 Haiku](https://www.anthropic.com/news/claude-3-haiku)) to judge the similarity of a model generated text with one or more ground-truths on a 1-5 LIKERT scale, using the following prompt format:
 
 ```
 TEMPLATE = """You are shown ground-truth answer(s) and asked to judge the quality of an LLM-generated answer.
@@ -152,7 +186,7 @@ We elicit Claude Haiku responses using Answer.AI's Anthropic wrapper [Claudette]
 
 ### Parallelizing Eval
 
-As of now, GPT-Fast and, by extension, **Cold Compress**, only supports single batch, single GPU inference. *(We are working on adding batched multi-GPU inference.)*
+As of now, GPT-Fast and, by extension, **Cold Compress**, only supports batch size one inference. Cold Compress does not yet support multi-GPU tensor parallel inference as well. *(We are working on adding batched multi-GPU inference.)*
 
 To take advantage of multiple GPUs, we’ve written a script to parallelize eval jobs. 
 
@@ -162,13 +196,13 @@ The first is to provide a set of cache_configs, cache_sizes, and tasks which you
 
 ```
 python parallelize_evals.py \
-    --config_names random l2 heavy_hitter window \
+    --config_names random l2 heavy_hitter recent_global \
     --tasks truthfulqa rulerqa rulerniah rulervt rulercwe scrollsquality musique squality dolomites qmsum repobench \
     --cache_sizes 0.75 0.5 0.25 0.1 0.05 \
     --num_samples 500 \
     --add_full \
     --num_gpus 8 \
-    --checkpoint_path checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth
+    --checkpoint_path checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth
 ```
 
 This command will take the cartesian product of the `config_names`, `tasks`, and `cache_sizes`, and create the appropriate evaluation jobs and queue them across 8 GPU workers.
@@ -203,12 +237,12 @@ A recent [blogpost from Character.ai](https://research.character.ai/optimizing-i
 
 In addition to using multi-query attention (MQA), they introduce two modifications:
 1. Alternating **Local-Global** layers
-2. **Cross-Layer Attention**: this is basically MQA across layers. Coming soon to **Cold Compress**!
+2. **Cross-Layer Attention**: this is basically MQA with additional KV sharing across layers. Coming soon to **Cold Compress**!
 
 ![Local-Global Attention](images/local_global_from_character_ai.png)
 
 
-**Local-Global** attention is intriguing because it enables compression without losing the full history, which is preserved at certain layers.
+Cache compression strategies emulating the **Local-Global** attention architecture is intriguing because it enables compression without losing the full history, which is preserved at certain layers.
 
 In **Cold Compress**, **Local-Global** is just a mix of cache strategies (`RecentGlobal` and `Full`) across layers:
 
@@ -229,7 +263,7 @@ global_tokens: 4
 
 We set a dynamic strategy by passing a list of strategies to `cache_strategy` and then control the pattern by setting `cache_strategy_pattern` to “repeat” which alternates the two. “tile” sets the first `N // 2` layers to full and the final `N // 2` layers to full.
 
-You can pass in a `cache_strategy` of any length, provided it is a factor of the number of layers in the model (`32` for `Llama-3-8B`).
+You can pass in a `cache_strategy` of any length, provided it is a factor of the number of layers in the model (`32` for `Llama-3.1-8B`).
 
 You can run a pre-configured set of local-global experiments with:
 
@@ -243,13 +277,13 @@ There is no consensus regarding the optimal allocation of a KV cache budget acro
 
 While [PyramidKV](https://arxiv.org/abs/2406.02069) proposes increasing compression at higher layers, [ScissorHands](https://arxiv.org/abs/2305.17118) advocates for the opposite. ScissorHands finds that `Heavy Hitters` are more variable at higher layers, so larger caches are needed to reduce cache misses.
 
-Most other work proposes a uniform cache size.
+Most other work proposes a uniform cache size across layers.
 
 We introduce `--cache_length_pattern` to enable experimentation around this important hyper-parameter.
 
 To use a pyramid cache pattern, you can set `--cache_length_pattern pyramid`.
 
-Alternatively, `--cache_length_pattern pyramid` funnel will decrease
+Alternatively, `--cache_length_pattern funnel` will invert this, using greater cache sizes at later layers.
 
 The value passed for `--max_cache_length` represents the average cache size for pyramids and funnels.
 
@@ -283,7 +317,7 @@ To calculate the **Attention Loss**, we need to keep all tokens in the KVCache, 
 To do this, we create a new class `KVCacheAnalysis` which is invoked when the cache strategy is prepended with the string `debug`:
 
 ```
-python eval.py --cache_strategy debug_scissor
+python eval.py --compile --cache_strategy debug_scissor
 ```
 
 A handful of debugging experiments can be kicked off by running:
@@ -292,7 +326,7 @@ A handful of debugging experiments can be kicked off by running:
 bash experiments/attention_loss.sh
 ```
 
-These experiments record Attention Loss at various decoding steps. From these experiments, which record PPL on [PG-19 Book Corpus](https://github.com/google-deepmind/pg19), we can show a clear correlation between Attention Loss and downstream performance (PPL).
+These experiments record Attention Loss at various decoding steps. From these experiments, which record PPL on the [PG-19 Book Corpus](https://github.com/google-deepmind/pg19), we can show a clear correlation between Attention Loss and downstream performance (PPL).
 
 ![Attention Loss Results](images/attention_loss_pg19.png)
 
@@ -303,109 +337,87 @@ This suggests that **Attention Loss** might be an decent proxy to approximate do
 ### Adding a new Cache Strategy
 We’ll walk through the process of creating a made-up cache eviction strategy called `KVCacheKeepItOdd`.
 
-`KVCacheKeepItOdd` is funky!  It only keeps the positions in odd, in addition to the first $n$ tokens (specified by `--global_tokens`).
+`KVCacheKeepItOdd` is funky!  It only keeps odd-indexed token positions, in addition to the first $n$ tokens (specified by `--global_tokens`) and the most recent $m$ tokens (specified by `--recent_window`).
 
 In `cache.py` we’ll create a new class (`KVCacheKeepItOdd`), add it to the registry of caches (`get_cache_constructor`), and make it available as a command-line arg in `add_cache_arguments`.
 
 ```
 def add_cache_arguments(parser: argparse.ArgumentParser):
-    ...
-    strategies = [..., "keep_it_odd"]
-    ...
+	...
+	strategies = [..., "keep_it_odd"]
+	...
 
-class KVCacheKeepItOdd(KVCache):
-    def __init__(
-        self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
-    ):
-        super().__init__(
-            max_batch_size, n_heads, head_dim, dtype, head_specific=False, **kwargs
-        )
+class KVCacheKeepItOdd(KVCacheHeadConstant):
+	...
 
-...
 def get_cache_constructor(cache_strategy):
     ...
     elif cache_strategy == "keep_it_odd":
         cls = KVCacheKeepItOdd
 ```
 
-Next, we’ll have to write the `_update` function to implement our funky strategy:
+Next, we’ll have to write a `_token_importances` function to implement our funky strategy:
 
 ```
-class KVCacheKeepItOdd(KVCache):
-	...
-    def _update(self, input_pos, k_val, v_val, input_ids=None):
-        start = end = None  # We will fill the cache in order
-        odd_idxs = torch.argwhere(
-            torch.logical_or(input_pos < self.global_tokens, input_pos % 2 == 1)
-        ).squeeze(1)
+class KVCacheKeepItOdd(KVCacheHeadConstant):
+    relevant_kwargs = [
+        "max_cache_length",
+        "max_seq_length",
+        "global_tokens",
+        "recent_window",
+    ]
 
-        # Don't insert into cache if input_pos is even
-        if len(odd_idxs) == 0:
-            return 0
+    def __init__(
+        self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
+    ):
+        super().__init__(max_batch_size, n_heads, head_dim, dtype, **kwargs)
 
-        input_pos = input_pos[odd_idxs]
-        k_val = k_val[:, :, odd_idxs, :]
-        v_val = v_val[:, :, odd_idxs, :]
-
-        need_to_evict = self.cache_cts >= self.max_cache_length
-        if need_to_evict:  # Select a spot at random
-            start = torch.argmin(self.pos)
-            end = start + 1
-        
-        self.fill_contiguous(input_pos, k_val, v_val, start=start,end=end)
-        return 0 if need_to_evict else input_pos.shape[-1]
+    def _token_importances(self, input_pos):
+        scores = torch.zeros_like(self.pos[:, 0], dtype=torch.bfloat16)
+        scores[self.pos[:, 0] % 2 == 1] = 1.0
+        scores[self.pos[:, 0] >= input_pos - self.recent_window] = float("inf")
+        return scores
 ```
-
-We rely on the `input_pos` to identify global-protected and odd tokens.
-
-We use `fill_contiguous` and only specify the `start` and `end` indices if we need to evict.
 
 ### Adding a new Prompt Compression Strategy
 
 Now that we have a `Keep-It-Odd` cache strategy, we need to figure out what to do when the prompt sequence length is greater than the specified cache size.
 
-We can use an existing prompt compression method by passing in `--prompt_compression_strategy recent_window`, or we can create a new one which also implements our odd logic.
+We can use an existing prompt compression method by passing in `--prompt_compression_strategy recent_global`, or we can create a new one which also implements our odd logic.
 
 To do this, we will create a `PromptCompressorKeepItOdd` class in `prompt_compression.py`:
 
 ```
-class PromptCompressorKeepItOdd(PromptCompressor):
+class PromptCompressorKeepItOdd(PromptCompressorHeadConstant):
+    """
+    A toy example of a prompt compressor that keeps the odd positions indices of the prompt.
+    """
+
     def __init__(self, head_specific, **kwargs) -> None:
         super().__init__(head_specific, **kwargs)
 
-    def is_compatible(self) -> bool:
-        return True # Can be used with any cache
+    def _token_importances(self, input_pos, k_val, v_val, **kwargs):
+        seq_len = input_pos.shape[-1]
+        # Compute odd indices from keep_idxs to input_pos.shape[-1] - window
+        priority = input_pos.masked_fill(
+            self._recent_global_mask(input_pos),
+            seq_len * 2
+        )
 
-    def requires_attn(self) -> bool:
-        return False  # Doesn't use attention-based evictions
+        # Lower the priority of even tokens
+        priority[input_pos % 2 == 0] -= seq_len
 
-    def idxs_to_save(self, input_pos):
-        odd_idxs = torch.argwhere(
-            torch.logical_or(
-                input_pos < self.global_tokens, input_pos % 2 == 1
-            )
-        ).squeeze(1)
-        remove_middle_n = max(len(odd_idxs) - self.max_cache_length, 0)
-        odd_idxs = odd_idxs[remove_middle_n // 2 : -remove_middle_n // 2]
-        return odd_idxs
-
-    def __call__(self, input_pos, k_val, v_val):
-        keep_idxs = self.idxs_to_save(input_pos)
-        k_val = k_val[:, :, keep_idxs]
-        v_val = v_val[:, :, keep_idxs]
-        return keep_idxs, k_val, v_val
+        return priority
 ```
 
-The prompt compressor applies the same selection logic as `KVCacheKeepItOdd`: keep odd positions and global tokens.
+The prompt compressor applies the same selection logic as `KVCacheKeepItOdd`: keep odd positions, recent tokens, and global tokens.
 
 The prompt compressor is responsible for filtering the prompt down to the max cache length.
-
-Here, we’ve decided to filter out tokens [in the middle](https://arxiv.org/abs/2307.03172) to fit our cache budget.
 
 This new strategy can now be used from the command line:
 
 ```
-python eval.py --compile --cache_strategy keep_it_odd --prompt_compression_strategy keep_it_odd --max_cache_length 0.5
+python eval.py --compile --cache_strategy keep_it_odd --prompt_compression_strategy keep_it_odd --global_tokens 4 --recent_window 10 --max_cache_length 0.5
 ```
 
 To avoid passing in arguments to the command line each time, you can write a `./cache_configs/keep_it_odd.yaml` file:
@@ -413,13 +425,14 @@ To avoid passing in arguments to the command line each time, you can write a `./
 ```
 cache_strategy: ["keep_it_odd"]
 prompt_compression_strategy: ["keep_it_odd"]
-max_cache_length: [0.5]
+recent_window: 10
+global_tokens: 4
 ```
 
 And run with just:
 
 ```
-python eval.py --compile --cache_config keep_it_odd
+python eval.py --compile --cache_config keep_it_odd --max_cache_length 0.5
 ```
 
 ### Adding a new Task
@@ -483,7 +496,7 @@ TASK_MAPPING = {
 
 # Getting Involved
 
-We'd **love** for you to get involved and collectively aim to improve `Cold Compress` for future releases.
+We'd **love** for you to get involved and collectively aim to improve `Cold Compress` for future releases. There are various ways to get involved:
 
 1. Participate in discussions of KV Cache Compression on our [public Discord server](https://discord.gg/NvERJKrEdA).
 2. Raise an [issue](https://github.com/AnswerDotAI/context-compression/issues) for something you'd like to see fixed, improved, or built.
@@ -496,8 +509,9 @@ We are actively exploring supporting the following in `Cold Compress`:
 1. [GIST tokens](https://arxiv.org/abs/2304.08467).
 2. CPU offloading of ``evicted'' tokens, e.g., [InfLLM](https://arxiv.org/abs/2402.04617).
 3. [Cross Layer Attention](https://arxiv.org/abs/2405.12981).
-4. Bayesian optimization to find optimal hybrid strategy.
+4. Bayesian optimization to find optimal hybrid strategies.
 5. KV-Cache Lite Architectures, e.g., [YOCO](https://arxiv.org/abs/2405.05254), [GoldFinch](https://arxiv.org/abs/2407.12077), [Infini-attention](https://arxiv.org/abs/2404.07143), [LoMA](https://arxiv.org/abs/2401.09486), [Block Transformer](https://arxiv.org/abs/2406.02657).
+6. [Importance-aware quantization](https://arxiv.org/abs/2402.18096)
 
 ## Getting Involved with Eval
 
@@ -513,7 +527,7 @@ We are interested in adding support for:
 
 # Citations
 
-**Cold Compress** implements methods introduced in existing work. If you it it in *your* work, please make sure to cite the following:
+**Cold Compress** implements methods introduced in existing work. If you use it in *your* work, please make sure to cite the following works that correspond to the methods you used:
 
 ## Recent Global
 
@@ -641,6 +655,7 @@ We are interested in adding support for:
 
 **`--cache_strategy [{recent_global, heavy_hitter, ...}, full] --cache_strategy_pattern {tile,repeat}`**
 
+```
 @article{beltagy2020longformer,
   title={Longformer: The long-document transformer},
   author={Beltagy, Iz and Peters, Matthew E and Cohan, Arman},
@@ -653,3 +668,4 @@ We are interested in adding support for:
   url={https://storage.googleapis.com/deepmind-media/gemma/gemma-2-report.pdf},
   year={2024}
 }
+```

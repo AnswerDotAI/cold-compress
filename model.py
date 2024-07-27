@@ -16,7 +16,6 @@ from torch.nn import functional as F
 from attention_utils import scaled_dot_product_attention
 from cache import get_cache_constructor
 from prompt_compression import get_prompt_compressor_constructor
-from functorch.experimental.control_flow import cond
 
 
 def find_multiple(n: int, k: int) -> int:
@@ -104,17 +103,6 @@ transformer_configs = {
     "Meta-Llama-3-8B-Instruct": dict(
         block_size=8192,
         n_layer=32,
-        n_head=32,
-        n_local_heads=8,
-        dim=4096,
-        intermediate_size=14336,
-        vocab_size=128256,
-        rope_base=500000,
-        max_length=8192,
-    ),
-    "Meta-Llama-3-8B-Instruct-4-Layers": dict(
-        block_size=8192,
-        n_layer=4,
         n_head=32,
         n_local_heads=8,
         dim=4096,
@@ -394,12 +382,15 @@ class Attention(nn.Module):
         q = apply_rotary_emb(q, freqs_cis)
         k = apply_rotary_emb(k, freqs_cis)
 
-        q, k, v = map(lambda x: x.transpose(1, 2), (q, k, v))
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
         kv_mask = None
+        cache_kwargs = {"input_ids": input_ids}
         if not is_prefill:
             k, v, kv_mask = self.kv_cache.update_kv(
-                input_pos, k, v, is_prefill, input_ids=input_ids
+                input_pos, k, v, is_prefill, **cache_kwargs
             )
             kv_mask = kv_mask.repeat_interleave(
                 self.n_head // self.n_local_heads, dim=1
@@ -429,10 +420,11 @@ class Attention(nn.Module):
         # Prefill updates happen after since we don't use the KV cache for prefill attention
         if is_prefill:
             input_pos, k, v, attn = self.compress_prompt(input_pos, k, v, attn)
-            self.kv_cache.update_kv(input_pos, k, v, is_prefill, input_ids)
+            self.kv_cache.update_kv(input_pos, k, v, is_prefill, **cache_kwargs)
 
-        # Update the KV Cache internal state now that we have (Optional) attention probabilities
-        self.kv_cache.update_state(input_pos, k, v, is_prefill, input_ids, attn=attn)
+        # [Optional] Update the KV Cache internal state now that we have attention probabilities
+        # This is a no-op for most cache classes
+        self.kv_cache.update_state(input_pos, k, v, is_prefill, attn, **cache_kwargs)
 
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 

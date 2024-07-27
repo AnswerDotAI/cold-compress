@@ -748,8 +748,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoint_path",
         type=Path,
-        default=Path("checkpoints/meta-llama/Llama-2-7b-chat-hf/model.pth"),
-        help="Path to the model checkpoint to be quantized.",
+        default=Path(__file__).resolve().parent
+        / "checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth",
+        help="Model checkpoint path.",
     )
     parser.add_argument(
         "--mode",

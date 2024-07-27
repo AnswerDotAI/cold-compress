@@ -6,6 +6,7 @@
 import sys
 import time
 import argparse
+import math
 import json
 import regex as re
 import contextlib
@@ -39,9 +40,13 @@ from tokenizer import encode, TokenizerInterface
 torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
-# import logging
-# torch._logging.set_logs(dynamo = logging.DEBUG, inductor = logging.DEBUG)
-# torch._dynamo.config.verbose = True
+DEBUG_COMPILE = False
+if DEBUG_COMPILE:
+    import logging
+
+    level = logging.DEBUG
+    torch._logging.set_logs(dynamo=level, inductor=level)
+    torch._dynamo.config.verbose = True
 
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -199,7 +204,6 @@ def run_task(
         assert max_new_tokens > 0, f"Prompt too long for model: {prompt_length}"
 
         device_sync(device=device)  # MKG
-        t0 = time.perf_counter()
 
         if not profile or (use_tp and rank != 0):
             prof = contextlib.nullcontext()
@@ -207,7 +211,7 @@ def run_task(
             torch.profiler._utils._init_for_cuda_graphs()
             prof = torch.profiler.profile()
         with prof:
-            y, probs = generate(
+            y, probs, perf_stats = generate(
                 model,
                 input,
                 prefill,
@@ -219,6 +223,9 @@ def run_task(
                 feed_long_prompts=feed_long_prompts,
                 decode_first_token=decode_first_token,
             )
+
+        for k, v in perf_stats.items():
+            aggregate_metrics[k].append(v)
 
         if next_tokens is not None:
             nll = -torch.tensor(
@@ -239,15 +246,8 @@ def run_task(
             else:
                 prof.export_chrome_trace(f"{profile}.json")
         device_sync(device=device)  # MKG
-        t = time.perf_counter() - t0
 
-        tokens_generated = y.size(0) - prompt_length
-        tokens_sec = tokens_generated / t
-        aggregate_metrics["tokens_per_sec"].append(tokens_sec)
-        aggregate_metrics["num_toks"].append(tokens_generated)
-
-        # Reset Counters for KV Cache
-        cache_stats = get_cache_stats(model, prompt_length, tokens_generated)
+        cache_stats = get_cache_stats(model, prompt_length, perf_stats["decode_tokens"])
         for k, v in cache_stats.items():
             aggregate_metrics[k].append(v)
 
@@ -269,10 +269,11 @@ def run_task(
                     {k: v for k, v in zip(tokenizer.get_vocab(), probs[-1].tolist())}
                 )
 
+        # Reset KV Cache state
         reset_caches(model)
 
     print(
-        f"Average tokens/sec: {torch.mean(torch.tensor(aggregate_metrics['tokens_per_sec'])).item():.2f}"
+        f"Average tokens/sec: {torch.mean(torch.tensor(aggregate_metrics['total_toks_per_sec'])).item():.2f}"
     )
     max_mem_gb = torch.cuda.max_memory_reserved() / 1e9
     print(f"Memory used: {max_mem_gb} GB")
@@ -280,6 +281,21 @@ def run_task(
 
     for k, v in aggregate_metrics.items():
         task_metrics[k] = sum(v) / len(v)
+
+        # For toks_per_sec, we also want to report the average of the highest 10% toks/second
+        # This is useful to get a sense of toks / second without the one-time impact of compilation
+        if "toks_per_sec" in k:
+            # Useful to save toks_per_sec for each example for better understanding of how it changes over time with compile
+            task_metrics[k] = v
+            # Also save the top 10% average (likely unaffected by compile)
+            v.sort()
+            cutoff = math.ceil(len(v) / 10)
+            task_metrics[f"{k}_top_10p"] = sum(v[-cutoff:]) / cutoff
+
+        if k == "total_seconds":
+            task_metrics[f"{k}_min"] = min(aggregate_metrics[k])
+            task_metrics[f"{k}_max"] = max(aggregate_metrics[k])
+            task_metrics[f"{k}_median"] = float(np.median(aggregate_metrics[k]))
 
     if task.requires_perplexity:
         pred_df = None
@@ -308,11 +324,6 @@ def main(
 ) -> None:
     """Generates text samples based on a pre-trained Transformer model and tokenizer."""
     assert checkpoint_path.is_file(), checkpoint_path
-
-    # Uncomment to debug torch.compile -- dump all logs to file
-    # from generate import pytorch_logs_to_file
-    # import logging
-    # pytorch_logs_to_file()
 
     tokenizer_path = checkpoint_path.parent / "tokenizer.model"
     if not tokenizer_path.is_file():
@@ -361,6 +372,7 @@ def main(
         "model_max_length": model.config.max_length,
         "num_samples": args.num_samples,
         "tokenizer": tokenizer.encode_prompt if is_chat else tokenizer.encode,
+        "seq_length": args.seq_length,
     }
     if tasks == ["all"]:
         # Evaluate all tasks
@@ -437,12 +449,13 @@ def main(
 
 
 def setup(args) -> Path:
+    sub_dir = args_to_str(args) if args.out_dir is None else args.out_dir
     out_dir = (
         Path(__file__).parent
         / "results"
         / args.checkpoint_path.parent.name
         / "__".join(compress_list(args.cache_strategy))
-        / args_to_str(args)
+        / sub_dir
     )
 
     print(f"Saving to {out_dir}")
@@ -473,6 +486,13 @@ def add_eval_args(parser):
     )
 
     parser.add_argument(
+        "--out_dir",
+        type=Path,
+        default=None,
+        help="Output directory for results. If not specified, will be a concatenation of the program args.",
+    )
+
+    parser.add_argument(
         "--debug",
         default=False,
         action="store_true",
@@ -491,6 +511,14 @@ def add_eval_args(parser):
         default=False,
         action="store_true",
         help="Whether to over-write existing results if they exist.",
+    )
+
+    # Only for --tasks PG19
+    parser.add_argument(
+        "--seq_length",
+        type=int,
+        default=None,
+        help="Specify the number of tokens for the dataset.",
     )
 
     parser.add_argument(

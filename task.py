@@ -568,8 +568,13 @@ class PG19(EvaluationTask):
 {story_start}"""
 
     def __init__(self, prompt_template=DEFAULT_PROMPT_TEMPLATE, **kwargs):
+        # Change max_tokens here if you want longer contexts
+        max_tokens = kwargs.pop("seq_length")
         super().__init__(
-            prompt_template, max_tokens=8192, hf_args=["emozilla/pg19-test"], **kwargs
+            prompt_template,
+            max_tokens=max_tokens,
+            hf_args=["emozilla/pg19-test"],
+            **kwargs,
         )
         self.train_split = None
         self.validation_split = None
@@ -796,7 +801,7 @@ if __name__ == "__main__":
         "--checkpoint_path",
         type=Path,
         default=Path(__file__).resolve().parent
-        / "checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth",
+        / "checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth",
         help="Model checkpoint path.",
     )
 

@@ -3,7 +3,7 @@
 set -e
 
 MODELS=(
-	"checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth"
+	"checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth"
 	"checkpoints/Qwen/Qwen2-7B-Instruct/model.pth"
 )
 NUM_SAMPLES=500

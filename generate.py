@@ -17,44 +17,22 @@ import logging
 from cache import add_cache_arguments
 from generation_utils import (
     add_generation_arguments,
+    compile_funcs,
     compute_max_seq_length,
     device_sync,
-    compile_funcs,
+    print_stats,
 )
-
-
-def pytorch_logs_to_file(file: str = "pytorch.log"):
-    torch._logging.set_logs(
-        dynamo=logging.INFO,
-        aot=logging.INFO,
-        inductor=logging.INFO,
-        graph_breaks=True,
-        guards=True,
-        recompiles=True,
-        recompiles_verbose=True,
-        output_code=True,
-        graph_code=True,
-        graph=True,
-    )
-    torch._logging._init_logs(file)
-
-    loggers = logging.Logger.manager.loggerDict.keys()
-    for logger_name in loggers:
-        if logger_name.startswith("torch"):
-            logger = logging.getLogger(logger_name)
-            if isinstance(logger, logging.Logger):
-                handlers = logger.handlers
-                for handler in handlers:
-                    if isinstance(handler, logging.StreamHandler):
-                        logger.removeHandler(handler)
-
 
 torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
-torch._dynamo.config.capture_dynamic_output_shape_ops = True
-# torch._logging.set_logs(dynamo = logging.WARNING, inductor = logging.WARNING)
-# torch._dynamo.config.verbose = True
+DEBUG_COMPILE = False
+if DEBUG_COMPILE:
+    import logging
+
+    level = logging.DEBUG
+    torch._logging.set_logs(dynamo=level, inductor=level)
+    torch._dynamo.config.verbose = True
 
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -133,10 +111,6 @@ def main(
 
     prefill, decode_one_token = compile_funcs(compile)
 
-    aggregate_metrics = {
-        "tokens_per_sec": [],
-    }
-
     device_sync(device=device)  # MKG
 
     max_prompt_length, max_seq_length = compute_max_seq_length(
@@ -145,51 +119,41 @@ def main(
     max_new_tokens = min(max_new_tokens, max_seq_length - max_prompt_length)
     setup_caches(model, tokenizer, inputs[0].device, max_seq_length, cache_kwargs)
 
-    t0 = time.perf_counter()
+    y, _, perf_stats = generate(
+        model,
+        inputs[0],
+        prefill,
+        decode_one_token,
+        max_new_tokens=max_new_tokens,
+        terminator_ids=terminator_ids,
+        attn_top_k=attn_top_k,
+        feed_long_prompts=feed_long_prompts,
+    )
 
-    if (not profile) or (use_tp and rank != 0):
-        prof = contextlib.nullcontext()
-    else:
-        torch.profiler._utils._init_for_cuda_graphs()
-        prof = torch.profiler.profile()
-
-    with prof:
-        y, _ = generate(
-            model,
-            inputs[0],
-            prefill,
-            decode_one_token,
-            max_new_tokens=max_new_tokens,
-            terminator_ids=terminator_ids,
-            attn_top_k=attn_top_k,
-            feed_long_prompts=feed_long_prompts,
-        )
-    print(f"Compilation time: {time.perf_counter() - t0:.2f} seconds")
-    if hasattr(prof, "export_chrome_trace"):
-        if use_tp:
-            prof.export_chrome_trace(f"{profile}_rank_{rank}.json")
-        else:
-            prof.export_chrome_trace(f"{profile}.json")
     device_sync(device=device)  # MKG
-    t = time.perf_counter() - t0
-
+    print("\n==========\n")
+    print("GENERATION:")
     print(tokenizer.decode(y.tolist()))
-    tokens_generated = y.size(0) - max_prompt_length
-    tokens_sec = tokens_generated / t
-
-    aggregate_metrics["tokens_per_sec"].append(tokens_sec)
-    print(f"Time for inference: {t:.02f} sec total, {tokens_sec:.02f} tokens/sec")
-    print(f"Tokens generated: {tokens_generated}")
-    print(f"Bandwidth achieved: {model_size * tokens_sec / 1e9:.02f} GB/s")
-    print("==========")
+    print("\n==========\n")
+    print("PERFORMANCE:")
+    tokens_per_second = perf_stats["total_toks_per_sec"]
+    decode_tokens = perf_stats["decode_tokens"]
+    total_seconds = perf_stats["total_seconds"]
+    memory_used_gb = perf_stats["memory_used_gb"]
 
     print(
-        f"Average tokens/sec: {torch.mean(torch.tensor(aggregate_metrics['tokens_per_sec'])).item():.2f}"
+        f"Time: {total_seconds:.02f} sec total, {tokens_per_second:.02f} tokens/sec, {decode_tokens} tokens"
     )
-    print(f"Memory used: {torch.cuda.max_memory_reserved() / 1e9:.02f} GB")
-    
-    print("Cache Statistics:")
-    print(model.get_cache_stats(max_prompt_length, tokens_generated))
+    print(f"Bandwidth: {model_size * tokens_per_second / 1e9:.02f} GB/s")
+    print(f"Memory used: {memory_used_gb} GB")
+    print("\n==========\n")
+    print("DETAILED PERFORMANCE:")
+    print_stats(perf_stats)
+
+    print("\n==========\n")
+    print("KV CACHE STATISTICS:")
+    cache_stats = model.get_cache_stats(max_prompt_length, decode_tokens)
+    print_stats(cache_stats)
 
 
 if __name__ == "__main__":
