@@ -3,6 +3,7 @@ import regex as re
 from abc import ABC, abstractmethod
 from collections import Counter
 from prompt_compression import get_prompt_compressor_constructor
+from quantization_utils import quantize_tensor, dequantize_tensor
 
 import argparse
 import torch
@@ -19,6 +20,12 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         nargs="+",
         help="Cache size per layer. If len < n layers, the values are tiled. Must have len divisible by n layers. \
         If 0 < x <= 1, it is percent of |prompt| + max new tokens. Otherwise, if > 1, its the maximum size.",
+    )
+
+    group.add_argument(
+        "--quantize_cache",
+        action="store_true",
+        help="Quantize the cache to reduce memory usage.",
     )
 
     # ScissorHands (https://arxiv.org/abs/2305.17118) recommends large caches at higher levels --> funnel
@@ -140,7 +147,12 @@ def create_window_attention_mask(seq_len, window_size, device, global_tokens: in
 class KVCache(ABC, nn.Module):
     # Define which hyperparameters are relevant for the cache.
     # Override as needed for sub-classes.
-    relevant_kwargs = ["max_cache_length", "global_tokens", "max_seq_length"]
+    relevant_kwargs = [
+        "max_cache_length",
+        "global_tokens",
+        "max_seq_length",
+        "quantize_cache",
+    ]
 
     def __init__(
         self,
@@ -150,6 +162,7 @@ class KVCache(ABC, nn.Module):
         dtype=torch.bfloat16,
         head_specific=False,  # IFF True, heads can contain different tokens, e.g., cache evictions are "head_specific".
         variable_length=False,  # IFF True, the number of tokens inserted can vary across heads. Only true for KVCacheHybrid.
+        quantize_cache=False,
         **kwargs,
     ):
         super().__init__()
@@ -159,8 +172,30 @@ class KVCache(ABC, nn.Module):
             setattr(self, key, value)
 
         cache_shape = (max_batch_size, n_heads, self.max_cache_length, head_dim)
-        k_cache = torch.zeros(cache_shape, dtype=dtype)
-        v_cache = torch.zeros(cache_shape, dtype=dtype)
+
+        # NOTE: We only support 8-bit quantization for now
+        self.quantize = quantize_cache
+        self.quantization_axis = 2  # Quantize the cache along the sequence length axis
+
+        if self.quantize:
+            k_cache = torch.zeros(cache_shape, dtype=torch.int8)
+            v_cache = torch.zeros(cache_shape, dtype=torch.int8)
+            self.register_buffer(
+                "k_scales", torch.ones(self.max_cache_length, dtype=dtype)
+            )
+            self.register_buffer(
+                "v_scales", torch.ones(self.max_cache_length, dtype=dtype)
+            )
+            self.register_buffer(
+                "k_zero_points", torch.zeros(self.max_cache_length, dtype=torch.int8)
+            )
+            self.register_buffer(
+                "v_zero_points", torch.zeros(self.max_cache_length, dtype=torch.int8)
+            )
+        else:
+            k_cache = torch.zeros(cache_shape, dtype=dtype)
+            v_cache = torch.zeros(cache_shape, dtype=dtype)
+
         self.register_buffer("k_cache", k_cache)
         self.register_buffer("v_cache", v_cache)
 
@@ -241,6 +276,32 @@ class KVCache(ABC, nn.Module):
         assert torch.all(self.cache_cts <= self.max_cache_length)
         return ((n - self.cache_cts) / n).mean()
 
+    def quantize_cache(self):
+        if self.quantize:
+            self.k_cache, self.k_scales, self.k_zero_points = quantize_tensor(
+                self.k_cache, n_bit=8, axis=self.quantization_axis
+            )
+            self.v_cache, self.v_scales, self.v_zero_points = quantize_tensor(
+                self.v_cache, n_bit=8, axis=self.quantization_axis
+            )
+
+    def dequantize_cache(self):
+        if self.quantize:
+            self.k_cache = dequantize_tensor(
+                self.k_cache,
+                self.k_scales,
+                self.k_zero_points,
+                n_bit=8,
+                axis=self.quantization_axis,
+            )
+            self.v_cache = dequantize_tensor(
+                self.v_cache,
+                self.v_scales,
+                self.v_zero_points,
+                n_bit=8,
+                axis=self.quantization_axis,
+            )
+
     def return_kv_cache(self):
         return self.k_cache, self.v_cache, self.mask
 
@@ -253,6 +314,9 @@ class KVCache(ABC, nn.Module):
         Returns a tensor indicating the number of tokens inserted - number of tokens evicted.
         None is equivalent to 0.
         """
+        # Dequantize the cache before updating
+        self.dequantize_cache()
+
         if is_prefill:
             num_insertions = self._prefill_update(input_pos, k_val, v_val, **kwargs)
         else:
@@ -263,6 +327,10 @@ class KVCache(ABC, nn.Module):
         k, v, mask = (
             self.return_kv_cache()
         )  # By default, just returns self.k_cache, self.v_cache, self.mask
+
+        # Quantize the cache after updating
+        self.quantize_cache()
+
         return k, v, mask
 
     def update_state(self, *args, **kwargs):
