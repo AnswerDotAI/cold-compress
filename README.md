@@ -95,7 +95,6 @@ python generate.py --compile --prompt reverse_list.txt --checkpoint_path ./check
 
 `prompt_compression_strategy`: the strategy for filtering tokens during prefill **iff** `|prompt| > max_cache_length`. Choose a strategy from `prompt_compression.py`. Here, we chose a strategy `recent_window` to match our KV Cache strategy.
 
-
 ## Using a Cache Config
 
 It can be a pain to pass a long list of hyper-parameters via the command line.
@@ -104,7 +103,7 @@ To avoid this, you can create a Cache Config *.yaml* file instead under `./cache
 
 We've pre-populated it with some configurations, including the `recent_global` strategy discussed above.
 
-**[`./cache_configs/recent_global.yaml`]((https://github.com/AnswerDotAI/cold-compress/blob/main/cache_configs/recent_global.yaml)**
+**[`./cache_configs/recent_global.yaml`](https://github.com/AnswerDotAI/cold-compress/blob/main/cache_configs/recent_global.yaml)**
 
 ```
 cache_strategy: ["recent_global"]
