@@ -313,62 +313,47 @@ This suggests that **Attention Loss** might be an decent proxy to approximate do
 ### Adding a new Cache Strategy
 We’ll walk through the process of creating a made-up cache eviction strategy called `KVCacheKeepItOdd`.
 
-`KVCacheKeepItOdd` is funky!  It only keeps the positions in odd, in addition to the first $n$ tokens (specified by `--global_tokens`).
+`KVCacheKeepItOdd` is funky!  It only keeps the positions in odd, in addition to the first $n$ tokens (specified by `--global_tokens`) and the most recent $m$ tokens (specified by `--recent_window`).
 
 In `cache.py` we’ll create a new class (`KVCacheKeepItOdd`), add it to the registry of caches (`get_cache_constructor`), and make it available as a command-line arg in `add_cache_arguments`.
 
 ```
 def add_cache_arguments(parser: argparse.ArgumentParser):
-    ...
-    strategies = [..., "keep_it_odd"]
-    ...
+	...
+	strategies = [..., "keep_it_odd"]
+	...
 
-class KVCacheKeepItOdd(KVCache):
-    def __init__(
-        self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
-    ):
-        super().__init__(
-            max_batch_size, n_heads, head_dim, dtype, head_specific=False, **kwargs
-        )
+class KVCacheKeepItOdd(KVCacheHeadConstant):
+	...
 
-...
 def get_cache_constructor(cache_strategy):
     ...
     elif cache_strategy == "keep_it_odd":
         cls = KVCacheKeepItOdd
 ```
 
-Next, we’ll have to write the `_update` function to implement our funky strategy:
+Next, we’ll have to write a `_token_importances` function to implement our funky strategy:
 
 ```
-class KVCacheKeepItOdd(KVCache):
-	...
-    def _update(self, input_pos, k_val, v_val, input_ids=None):
-        start = end = None  # We will fill the cache in order
-        odd_idxs = torch.argwhere(
-            torch.logical_or(input_pos < self.global_tokens, input_pos % 2 == 1)
-        ).squeeze(1)
+class KVCacheKeepItOdd(KVCacheHeadConstant):
+    relevant_kwargs = [
+        "max_cache_length",
+        "max_seq_length",
+        "global_tokens",
+        "recent_window",
+    ]
 
-        # Don't insert into cache if input_pos is even
-        if len(odd_idxs) == 0:
-            return 0
+    def __init__(
+        self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
+    ):
+        super().__init__(max_batch_size, n_heads, head_dim, dtype, **kwargs)
 
-        input_pos = input_pos[odd_idxs]
-        k_val = k_val[:, :, odd_idxs, :]
-        v_val = v_val[:, :, odd_idxs, :]
-
-        need_to_evict = self.cache_cts >= self.max_cache_length
-        if need_to_evict:  # Select a spot at random
-            start = torch.argmin(self.pos)
-            end = start + 1
-        
-        self.fill_contiguous(input_pos, k_val, v_val, start=start,end=end)
-        return 0 if need_to_evict else input_pos.shape[-1]
+    def _token_importances(self, input_pos):
+        scores = torch.zeros_like(self.pos[:, 0], dtype=torch.bfloat16)
+        scores[self.pos[:, 0] % 2 == 1] = 1.0
+        scores[self.pos[:, 0] >= input_pos - self.recent_window] = float("inf")
+        return scores
 ```
-
-We rely on the `input_pos` to identify global-protected and odd tokens.
-
-We use `fill_contiguous` and only specify the `start` and `end` indices if we need to evict.
 
 ### Adding a new Prompt Compression Strategy
 
@@ -380,42 +365,54 @@ To do this, we will create a `PromptCompressorKeepItOdd` class in `prompt_compre
 
 ```
 class PromptCompressorKeepItOdd(PromptCompressor):
+    """
+    A toy example of a prompt compressor that keeps the odd indices of the prompt
+    """
+
     def __init__(self, head_specific, **kwargs) -> None:
         super().__init__(head_specific, **kwargs)
 
     def is_compatible(self) -> bool:
-        return True # Can be used with any cache
+        return True
 
     def requires_attn(self) -> bool:
-        return False  # Doesn't use attention-based evictions
+        return False
 
-    def idxs_to_save(self, input_pos):
-        odd_idxs = torch.argwhere(
-            torch.logical_or(
-                input_pos < self.global_tokens, input_pos % 2 == 1
-            )
-        ).squeeze(1)
-        remove_middle_n = max(len(odd_idxs) - self.max_cache_length, 0)
-        odd_idxs = odd_idxs[remove_middle_n // 2 : -remove_middle_n // 2]
-        return odd_idxs
+    def __call__(self, input_pos, k_val, v_val, **kwargs):
+        # Compute odd indices from keep_idxs to input_pos.shape[0] - window
+        odd_idxs = [
+            i
+            for i in range(self.global_tokens, input_pos.shape[0] - self.recent_window)
+            if i % 2 == 1
+        ]
+        keep_n = max(0, self.max_cache_length - self.global_tokens - self.recent_window)
+        odd_idxs = odd_idxs[-keep_n:]
 
-    def __call__(self, input_pos, k_val, v_val):
-        keep_idxs = self.idxs_to_save(input_pos)
+        keep_idxs = torch.tensor(
+            list(range(self.global_tokens))
+            + odd_idxs
+            + list(
+                range(
+                    input_pos.shape[0] - self.recent_window,
+                    input_pos.shape[0],
+                )
+            ),
+            dtype=torch.long,
+            device=k_val.device,
+        )
         k_val = k_val[:, :, keep_idxs]
         v_val = v_val[:, :, keep_idxs]
-        return keep_idxs, k_val, v_val
+        return keep_idxs, k_val, v_val, None
 ```
 
-The prompt compressor applies the same selection logic as `KVCacheKeepItOdd`: keep odd positions and global tokens.
+The prompt compressor applies the same selection logic as `KVCacheKeepItOdd`: keep odd positions, recent tokens, and global tokens.
 
 The prompt compressor is responsible for filtering the prompt down to the max cache length.
-
-Here, we’ve decided to filter out tokens [in the middle](https://arxiv.org/abs/2307.03172) to fit our cache budget.
 
 This new strategy can now be used from the command line:
 
 ```
-python eval.py --compile --cache_strategy keep_it_odd --prompt_compression_strategy keep_it_odd --max_cache_length 0.5
+python eval.py --compile --cache_strategy keep_it_odd --prompt_compression_strategy keep_it_odd --global_tokens 4 --recent_window 10 --max_cache_length 0.5
 ```
 
 To avoid passing in arguments to the command line each time, you can write a `./cache_configs/keep_it_odd.yaml` file:
@@ -423,7 +420,8 @@ To avoid passing in arguments to the command line each time, you can write a `./
 ```
 cache_strategy: ["keep_it_odd"]
 prompt_compression_strategy: ["keep_it_odd"]
-max_cache_length: [0.5]
+recent_window: 10
+global_tokens: 4
 ```
 
 And run with just:
