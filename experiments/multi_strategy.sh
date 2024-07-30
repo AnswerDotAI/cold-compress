@@ -3,7 +3,7 @@
 set -e
 
 DIR=$(dirname $(dirname "$0"))
-export CKPT=$DIR/checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth
+export CKPT=$DIR/checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth
 NUM_SAMPLES=500
 GLOBAL_TOKENS=4
 TASKS="rulerniah musique dolomites"
