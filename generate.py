@@ -111,10 +111,6 @@ def main(
 
     prefill, decode_one_token = compile_funcs(compile)
 
-    aggregate_metrics = {
-        "tokens_per_sec": [],
-    }
-
     device_sync(device=device)  # MKG
 
     max_prompt_length, max_seq_length = compute_max_seq_length(
@@ -134,7 +130,6 @@ def main(
         feed_long_prompts=feed_long_prompts,
     )
 
-    print(f"Compilation time: {time.perf_counter() - t0:.2f} seconds")
     device_sync(device=device)  # MKG
     print("\n==========\n")
     print("GENERATION:")
