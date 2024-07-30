@@ -2,5 +2,5 @@ cache_strategy: ["heavy_hitter"]
 prompt_compression_strategy: ["heavy_hitter"]
 global_tokens: 4
 recent_window: 10
-history_window_size: 400
+history_window_size: 1  # If history_window_size is 1, then the history window is disabled (we use all historical attentions which is faster).
 attn_thresholding: False

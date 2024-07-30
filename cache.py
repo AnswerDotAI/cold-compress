@@ -86,11 +86,10 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         help="The number of recently generated tokens to always spare from eviction.",
     )
 
-    # Scissorhands-specific Hyperparameters (--cache_strategy == "scissor")
-    ## See Algorithm 1 & 2 in arxiv.org/abs/2305.17118
-    group.add_argument(
-        "--history_window_size",  # Equivalent to "m" in Algorithm 2.
-        default=400,  # 400 is default specified in paper.
+    # Heavy Hitter Hyperparameters (--cache_strategy == "heavy_hitter")
+    group.add_argument( ## See Algorithm 2 in ScissorHands arxiv.org/abs/2305.17118
+        "--history_window_size",  # Equivalent to "m" in Algorithm 2. 400 is default specified in paper.
+        default=1,  # If 1, we accumulate the full history in one slot (effectively, a history_window_size of ∞)
         type=int,
         help="The number of past tokens to consider when computing 'Heavy Hitters' in the KV-Cache.",
     )
@@ -101,7 +100,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         help="Whether to accumulate number of times a token was unimportant (binary) versus raw un-normalized probabilities. If true, more memory efficient.",
     )
 
-    # Hybrid, e.g., FastGen -specific Hyperparameters (--cache_strategy == "hybrid")
+    # Hybrid, e.g., FastGen, specific hyperparameters (--cache_strategy == "hybrid")
     parser.add_argument(
         "--min_recovery_frac",
         default=0.9,
@@ -573,11 +572,13 @@ class KVCacheHeavyHitter(KVCacheHeadSpecific):
             n_heads,
             self.max_cache_length,
         )
+        # If attn_thresholding, we store a binary indicator of whether the attention >= uniform attention
+        # If not, we store the raw attention values
+        # If history_window_size = 1, we accumulate the full history in one slot so we need a dtype with large range
+        history_num_dtype = torch.bool if self.attn_thresholding else torch.float64 if self.history_window_size == 1 else dtype
         self.register_buffer(
             "attn_history_num",
-            torch.zeros(
-                history_num_shape, dtype=torch.bool if self.attn_thresholding else dtype
-            ),
+            torch.zeros(history_num_shape, dtype=history_num_dtype),
         )
 
         # Ideally, we could use the self.pos to track the number of times a token has been attended to
@@ -624,17 +625,24 @@ class KVCacheHeavyHitter(KVCacheHeadSpecific):
         attn = torch.cat([attn, pad_attn], dim=2)
 
         history_idx = self.attn_counter % self.history_window_size
-        self.attn_history_num[:, :, :, history_idx] = attn
+
+        if self.history_window_size == 1:  # We consider the full history
+            self.attn_history_num[:, :, :, history_idx] += attn
+        else:
+            self.attn_history_num[:, :, :, history_idx] = attn
         self.attn_history_denom += 1
         self.attn_counter += 1
 
     def _eviction_idx(self, input_pos):
         # Identify the token with consistently "lowest" attention
-
         numerator = self.attn_history_num.sum(dim=-1).float()
-        # The denominator is the number of times this token's history has been recorded
-        # We only record most self.history_window_size recent scores so need to clamp it
-        denominator = self.attn_history_denom.clamp(1, self.history_window_size)
+
+        if self.history_window_size == 1:  # We use the full history (there is no clamping around a fixed window)
+            denominator = self.attn_history_denom.clamp_min(1)
+        else:
+            # The denominator is the number of times this token's history has been recorded
+            # We only record most self.history_window_size recent scores so need to clamp it
+            denominator = self.attn_history_denom.clamp(1, self.history_window_size)
 
         avg_attn = numerator / denominator
 
@@ -754,11 +762,17 @@ class KVCacheHybrid(KVCacheHeavyHitter):
                 .sum(dim=-1)
                 .float()
             )
-            # The denominator is the number of times this token's history has been recorded
-            # We only record most self.history_window_size recent scores so need to clamp it
-            denominator = self.attn_history_denom[
-                :, head_idx, : self.cache_cts[head_idx]
-            ].clamp_max(self.history_window_size)
+
+            if self.history_window_size == 1:  # Use full history
+                denominator = self.attn_history_denom[
+                    :, head_idx, : self.cache_cts[head_idx]
+                ]
+            else:
+                # The denominator is the number of times this token's history has been recorded
+                # We only record most self.history_window_size recent scores so need to clamp it
+                denominator = self.attn_history_denom[
+                    :, head_idx, : self.cache_cts[head_idx]
+                ].clamp_max(self.history_window_size)
             score = numerator / denominator
         else:
             score = self.pos[:, head_idx, : self.cache_cts[head_idx]].clone().float()
