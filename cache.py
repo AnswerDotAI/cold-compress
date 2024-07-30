@@ -23,8 +23,10 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
     )
 
     group.add_argument(
-        "--quantize_cache",
-        action="store_true",
+        "--cache_bits",
+        default=None,
+        type=int,
+        choices=[2, 4, 8],
         help="Quantize the cache to reduce memory usage.",
     )
 
@@ -151,7 +153,7 @@ class KVCache(ABC, nn.Module):
         "max_cache_length",
         "global_tokens",
         "max_seq_length",
-        "quantize_cache",
+        "cache_bits",
     ]
 
     def __init__(
@@ -162,7 +164,7 @@ class KVCache(ABC, nn.Module):
         dtype=torch.bfloat16,
         head_specific=False,  # IFF True, heads can contain different tokens, e.g., cache evictions are "head_specific".
         variable_length=False,  # IFF True, the number of tokens inserted can vary across heads. Only true for KVCacheHybrid.
-        quantize_cache=False,
+        cache_bits=None,
         **kwargs,
     ):
         super().__init__()
@@ -171,30 +173,27 @@ class KVCache(ABC, nn.Module):
         for key, value in kwargs.items():
             setattr(self, key, value)
 
-        cache_shape = (max_batch_size, n_heads, self.max_cache_length, head_dim)
+        self.cache_shape = (max_batch_size, n_heads, self.max_cache_length, head_dim)
 
         # NOTE: We only support 8-bit quantization for now
-        self.quantize = quantize_cache
+        self.quantize = cache_bits is not None
+        self.n_bit = cache_bits
         self.quantization_axis = 2  # Quantize the cache along the sequence length axis
 
+        k_cache = torch.zeros(self.cache_shape, dtype=dtype)
+        v_cache = torch.zeros(self.cache_shape, dtype=dtype)
+
         if self.quantize:
-            k_cache = torch.zeros(cache_shape, dtype=torch.int8)
-            v_cache = torch.zeros(cache_shape, dtype=torch.int8)
-            self.register_buffer(
-                "k_scales", torch.ones(self.max_cache_length, dtype=dtype)
+            k_cache, k_scales, k_zeros = quantize_tensor(
+                k_cache, n_bit=self.n_bit, axis=self.quantization_axis
             )
-            self.register_buffer(
-                "v_scales", torch.ones(self.max_cache_length, dtype=dtype)
+            v_cache, v_scales, v_zeros = quantize_tensor(
+                v_cache, n_bit=self.n_bit, axis=self.quantization_axis
             )
-            self.register_buffer(
-                "k_zero_points", torch.zeros(self.max_cache_length, dtype=torch.int8)
-            )
-            self.register_buffer(
-                "v_zero_points", torch.zeros(self.max_cache_length, dtype=torch.int8)
-            )
-        else:
-            k_cache = torch.zeros(cache_shape, dtype=dtype)
-            v_cache = torch.zeros(cache_shape, dtype=dtype)
+            self.register_buffer("k_scales", k_scales)
+            self.register_buffer("v_scales", v_scales)
+            self.register_buffer("k_zero_points", k_zeros)
+            self.register_buffer("v_zero_points", v_zeros)
 
         self.register_buffer("k_cache", k_cache)
         self.register_buffer("v_cache", v_cache)
@@ -279,10 +278,10 @@ class KVCache(ABC, nn.Module):
     def quantize_cache(self):
         if self.quantize:
             self.k_cache, self.k_scales, self.k_zero_points = quantize_tensor(
-                self.k_cache, n_bit=8, axis=self.quantization_axis
+                self.k_cache, n_bit=self.n_bit, axis=self.quantization_axis
             )
             self.v_cache, self.v_scales, self.v_zero_points = quantize_tensor(
-                self.v_cache, n_bit=8, axis=self.quantization_axis
+                self.v_cache, n_bit=self.n_bit, axis=self.quantization_axis
             )
 
     def dequantize_cache(self):
@@ -291,14 +290,16 @@ class KVCache(ABC, nn.Module):
                 self.k_cache,
                 self.k_scales,
                 self.k_zero_points,
-                n_bit=8,
+                self.cache_shape,
+                n_bit=self.n_bit,
                 axis=self.quantization_axis,
             )
             self.v_cache = dequantize_tensor(
                 self.v_cache,
                 self.v_scales,
                 self.v_zero_points,
-                n_bit=8,
+                self.cache_shape,
+                n_bit=self.n_bit,
                 axis=self.quantization_axis,
             )
 
