@@ -94,7 +94,6 @@ class PromptCompressorRecentGlobal(PromptCompressor):
     def __call__(self, input_pos, k_val, v_val, **kwargs):
         # [global; ...; window - global] --> [global; window - global]
         # Indices for first global_tokens tokens and last (window - global_tokens) tokens
-        # Making this a tensor seems to give a speedup, but I haven't fully benchmarked
         keep_idxs = torch.tensor(
             list(range(self.global_tokens))
             + list(
@@ -106,7 +105,6 @@ class PromptCompressorRecentGlobal(PromptCompressor):
             dtype=torch.long,
             device=k_val.device,
         )
-        assert len(keep_idxs) == self.max_cache_length
         k_val = k_val[:, :, keep_idxs]
         v_val = v_val[:, :, keep_idxs]
         return keep_idxs, k_val, v_val, None
@@ -124,6 +122,8 @@ class PromptCompressorHeavyHitter(PromptCompressor):
         self.kernel_size = 5
         self.observation_len = 16
 
+        # Pooling layer to smooth out the attention distribution
+        # Feel free to remove this or optimize the kernel size
         self.pool = torch.nn.AvgPool1d(
             self.kernel_size,
             stride=1,
@@ -203,7 +203,7 @@ class PromptCompressorL2(PromptCompressor):
         k_val_compressed = k_val.gather(2, keep_idxs_rep)
         v_val_compressed = v_val.gather(2, keep_idxs_rep)
 
-        return keep_idxs, k_val_compressed, v_val_compressed
+        return keep_idxs, k_val_compressed, v_val_compressed, None
 
 
 def get_prompt_compressor_constructor(strategy):

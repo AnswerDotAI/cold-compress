@@ -497,6 +497,23 @@ class KVCacheL2(KVCacheHeadSpecific):
         key_norm_shape = (max_batch_size, n_heads, self.max_cache_length)
         self.register_buffer("key_norm", torch.zeros(key_norm_shape, dtype=dtype))
 
+    def _decoding_update(self, input_pos, k_val, v_val, **kwargs):
+        # Same as KVCacheHeadSpecific, but we also update the L2 norm of the keys for decoding
+        fill_indices = self._eviction_idx(input_pos)
+        num_insertions = (
+            (self.pos.gather(2, fill_indices.view(1, -1, 1)).squeeze() == -1)
+            .int()
+            .view(-1)
+        )
+
+        self._fill(input_pos, k_val, v_val, fill_idxs=fill_indices)
+
+        # Custom code for L2 -- store the key vector norms
+        key_norm = torch.linalg.vector_norm(k_val, ord=2, dim=-1)
+        self.key_norm.scatter_(2, fill_indices.view(1, -1, 1), key_norm)
+
+        return num_insertions
+
     def _token_importances(self, input_pos):
         # 1. Lowest l2 norms have high importance (- self.key_norm)
         # 2. Lowest score needs to be > -1 : we evict unfilled tokens first (+ max value such that min score is 0)
@@ -508,17 +525,10 @@ class KVCacheL2(KVCacheHeadSpecific):
         )
 
     def update_state(self, input_pos, k_val, v_val, is_prefill, attn, **kwargs):
-        if is_prefill:
+        # We will update the L2 norm of the keys for decoding in _decoding_update
+        # We do this during the update bc/ we have access to the fill indices of the tokens we are inserting
+        if is_prefill:  # For prefill, we cache the norm for the key cache at the time
             self.key_norm = torch.linalg.vector_norm(self.k_cache, ord=2, dim=-1)
-        else:
-            # Find where the just insserted input_pos is in the cache and update its key norm
-            fill_indices = (self.pos == input_pos).nonzero()[:, -1]
-            keys = self.k_cache.gather(
-                2,
-                fill_indices.view(1, -1, 1, 1).expand(1, -1, 1, self.k_cache.shape[-1]),
-            )
-            key_norm = torch.linalg.vector_norm(keys, ord=2, dim=-1)
-            self.key_norm.scatter_(2, fill_indices.view(1, -1, 1), key_norm)
 
 
 class KVCacheHeavyHitter(KVCacheHeadSpecific):
@@ -733,41 +743,44 @@ class KVCacheHybrid(KVCacheHeavyHitter):
         head_idx,
         input_pos,
         recent_window,
+        apply_heavy_hitter=False,
         apply_window=False,
         apply_special=False,
         apply_punc=False,
     ):
-        numerator = (
-            self.attn_history_num[:, head_idx, : self.cache_cts[head_idx]]
-            .sum(dim=-1)
-            .float()
-        )
-        # The denominator is the number of times this token's history has been recorded
-        # We only record most self.history_window_size recent scores so need to clamp it
-        denominator = self.attn_history_denom[
-            :, head_idx, : self.cache_cts[head_idx]
-        ].clamp_max(self.history_window_size)
-        avg_attn = numerator / denominator
+        if apply_heavy_hitter:
+            numerator = (
+                self.attn_history_num[:, head_idx, : self.cache_cts[head_idx]]
+                .sum(dim=-1)
+                .float()
+            )
+            # The denominator is the number of times this token's history has been recorded
+            # We only record most self.history_window_size recent scores so need to clamp it
+            denominator = self.attn_history_denom[
+                :, head_idx, : self.cache_cts[head_idx]
+            ].clamp_max(self.history_window_size)
+            score = numerator / denominator
+        else:
+            score = self.pos[:, head_idx, : self.cache_cts[head_idx]].clone().float()
 
-        save_mask = torch.zeros_like(avg_attn, dtype=torch.bool)
+        save_mask = torch.zeros_like(score, dtype=torch.bool)
         save_mask[:, : self.global_tokens] = 1
 
         if apply_special:
-            save_mask = self.special_mask[:, head_idx, : self.cache_cts[head_idx]]
+            save_mask |= self.special_mask[:, head_idx, : self.cache_cts[head_idx]]
 
         if apply_punc:
-            punc_mask = self.punc_mask[:, head_idx, : self.cache_cts[head_idx]]
-            save_mask |= punc_mask
+            save_mask |= self.punc_mask[:, head_idx, : self.cache_cts[head_idx]]
 
         if apply_window:
             window_mask = (
                 self.pos[:, head_idx, : self.cache_cts[head_idx]]
-                >= input_pos - recent_window
+                > input_pos - recent_window
             )
             save_mask |= window_mask
 
-        avg_attn.masked_fill_(save_mask, 1)
-        fill_idx = avg_attn.argmin(dim=-1)
+        score.masked_fill_(save_mask, float("inf"))
+        fill_idx = score.argmin(dim=-1)
 
         return fill_idx
 
@@ -807,16 +820,7 @@ class KVCacheHybrid(KVCacheHeavyHitter):
         if not eviction_required:
             return _end_idx(), False
 
-        if name == "window":
-            fill_idx = (
-                torch.argmin(
-                    self.pos[:, head_idx, self.global_tokens : self.cache_cts[head_idx]]
-                )
-                + self.global_tokens
-            )
-            return fill_idx, True  # Eviction Required
-
-        if "heavy_hitter" in name:
+        if "heavy_hitter" in name or "window" in name:
             recent_window = round(
                 strategy.get("recent_window", 0) * self.max_cache_length
             )
@@ -824,6 +828,7 @@ class KVCacheHybrid(KVCacheHeavyHitter):
                 head_idx,
                 input_pos,
                 recent_window=recent_window,
+                apply_heavy_hitter="heavy_hitter" in name,
                 apply_window="window" in name,
                 apply_punc="punc" in name,
                 apply_special="special" in name,
@@ -875,9 +880,10 @@ class KVCacheHybrid(KVCacheHeavyHitter):
 
             fill_indices[head_idx] = fill_idx
             if eviction_required:
-                # Reset attention history since we've inserted a new token
-                self.attn_history_num[:, head_idx, fill_idx, :].fill_(0)
-                self.attn_history_denom[:, head_idx, fill_idx].fill_(0)
+                if self.requires_heavy_hitter:
+                    # Reset attention history since we've inserted a new token
+                    self.attn_history_num[:, head_idx, fill_idx, :].fill_(0)
+                    self.attn_history_denom[:, head_idx, fill_idx].fill_(0)
             else:
                 # Increment cache_ct_incr for heads that have grown (no eviction)
                 cache_ct_incr[head_idx] = 1
