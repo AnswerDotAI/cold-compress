@@ -370,6 +370,7 @@ def main(
         "model_max_length": model.config.max_length,
         "num_samples": args.num_samples,
         "tokenizer": tokenizer.encode_prompt if is_chat else tokenizer.encode,
+        "seq_length": args.seq_length,
     }
     if tasks == ["all"]:
         # Evaluate all tasks
@@ -452,6 +453,8 @@ def setup(args) -> Path:
         / args.checkpoint_path.parent.name
         / "__".join(compress_list(args.cache_strategy))
         / args_to_str(args)
+        if args.out_dir is None
+        else args.out_dir
     )
 
     print(f"Saving to {out_dir}")
@@ -482,6 +485,13 @@ def add_eval_args(parser):
     )
 
     parser.add_argument(
+        "--out_dir",
+        type=Path,
+        default=None,
+        help="Output directory for results. If not specified, will be a concatenation of the program args.",
+    )
+
+    parser.add_argument(
         "--debug",
         default=False,
         action="store_true",
@@ -500,6 +510,14 @@ def add_eval_args(parser):
         default=False,
         action="store_true",
         help="Whether to over-write existing results if they exist.",
+    )
+
+    # Only for --tasks PG19
+    parser.add_argument(
+        "--seq_length",
+        type=int,
+        default=None,
+        help="Specify the number of tokens for the dataset.",
     )
 
     parser.add_argument(
