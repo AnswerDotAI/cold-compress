@@ -206,6 +206,47 @@ class PromptCompressorL2(PromptCompressor):
         return keep_idxs, k_val_compressed, v_val_compressed, None
 
 
+class PromptCompressorKeepItOdd(PromptCompressor):
+    """
+    A toy example of a prompt compressor that keeps the odd indices of the prompt
+    """
+
+    def __init__(self, head_specific, **kwargs) -> None:
+        super().__init__(head_specific, **kwargs)
+
+    def is_compatible(self) -> bool:
+        return True
+
+    def requires_attn(self) -> bool:
+        return False
+
+    def __call__(self, input_pos, k_val, v_val, **kwargs):
+        # Compute odd indices from keep_idxs to input_pos.shape[0] - window
+        odd_idxs = [
+            i
+            for i in range(self.global_tokens, input_pos.shape[0] - self.recent_window)
+            if i % 2 == 1
+        ]
+        keep_n = max(0, self.max_cache_length - self.global_tokens - self.recent_window)
+        odd_idxs = odd_idxs[-keep_n:]
+
+        keep_idxs = torch.tensor(
+            list(range(self.global_tokens))
+            + odd_idxs
+            + list(
+                range(
+                    input_pos.shape[0] - self.recent_window,
+                    input_pos.shape[0],
+                )
+            ),
+            dtype=torch.long,
+            device=k_val.device,
+        )
+        k_val = k_val[:, :, keep_idxs]
+        v_val = v_val[:, :, keep_idxs]
+        return keep_idxs, k_val, v_val, None
+
+
 def get_prompt_compressor_constructor(strategy):
     if strategy == "full":
         return PromptCompressorFull
@@ -217,5 +258,7 @@ def get_prompt_compressor_constructor(strategy):
         return PromptCompressorL2
     elif strategy == "random":
         return PromptCompressorRandom
+    elif strategy == "keep_it_odd":
+        return PromptCompressorKeepItOdd
     else:
         raise ValueError(f"Unknown prompt compression strategy: {strategy}")

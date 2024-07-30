@@ -87,7 +87,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
     )
 
     # Heavy Hitter Hyperparameters (--cache_strategy == "heavy_hitter")
-    group.add_argument( ## See Algorithm 2 in ScissorHands arxiv.org/abs/2305.17118
+    group.add_argument(  ## See Algorithm 2 in ScissorHands arxiv.org/abs/2305.17118
         "--history_window_size",  # Equivalent to "m" in Algorithm 2. 400 is default specified in paper.
         default=1,  # If 1, we accumulate the full history in one slot (effectively, a history_window_size of ∞)
         type=int,
@@ -575,7 +575,13 @@ class KVCacheHeavyHitter(KVCacheHeadSpecific):
         # If attn_thresholding, we store a binary indicator of whether the attention >= uniform attention
         # If not, we store the raw attention values
         # If history_window_size = 1, we accumulate the full history in one slot so we need a dtype with large range
-        history_num_dtype = torch.bool if self.attn_thresholding else torch.float64 if self.history_window_size == 1 else dtype
+        history_num_dtype = (
+            torch.bool
+            if self.attn_thresholding
+            else torch.float64
+            if self.history_window_size == 1
+            else dtype
+        )
         self.register_buffer(
             "attn_history_num",
             torch.zeros(history_num_shape, dtype=history_num_dtype),
@@ -637,7 +643,9 @@ class KVCacheHeavyHitter(KVCacheHeadSpecific):
         # Identify the token with consistently "lowest" attention
         numerator = self.attn_history_num.sum(dim=-1).float()
 
-        if self.history_window_size == 1:  # We use the full history (there is no clamping around a fixed window)
+        if (
+            self.history_window_size == 1
+        ):  # We use the full history (there is no clamping around a fixed window)
             denominator = self.attn_history_denom.clamp_min(1)
         else:
             # The denominator is the number of times this token's history has been recorded
@@ -1323,6 +1331,26 @@ class KVCacheAnalysis(KVCacheFull):
         return stats
 
 
+class KVCacheKeepItOdd(KVCacheHeadConstant):
+    relevant_kwargs = [
+        "max_cache_length",
+        "max_seq_length",
+        "global_tokens",
+        "recent_window",
+    ]
+
+    def __init__(
+        self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
+    ):
+        super().__init__(max_batch_size, n_heads, head_dim, dtype, **kwargs)
+
+    def _token_importances(self, input_pos):
+        scores = torch.zeros_like(self.pos[:, 0], dtype=torch.bfloat16)
+        scores[self.pos[:, 0] % 2 == 1] = 1.0
+        scores[self.pos[:, 0] >= input_pos - self.recent_window] = float("inf")
+        return scores
+
+
 def get_cache_constructor(cache_strategy):
     relevant_kwargs = None
     if cache_strategy == "full":
@@ -1337,6 +1365,8 @@ def get_cache_constructor(cache_strategy):
         cls = KVCacheHeavyHitter
     elif cache_strategy == "hybrid":
         cls = KVCacheHybrid
+    elif cache_strategy == "keep_it_odd":
+        cls = KVCacheKeepItOdd
     elif cache_strategy.startswith("debug"):
         cache_strategy = re.sub(r"debug_+", "", cache_strategy).strip()
         relevant_kwargs = get_cache_constructor(cache_strategy)[1] + [
