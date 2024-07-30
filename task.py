@@ -568,6 +568,7 @@ class PG19(EvaluationTask):
 {story_start}"""
 
     def __init__(self, prompt_template=DEFAULT_PROMPT_TEMPLATE, **kwargs):
+        # Change max_tokens here if you want longer contexts
         super().__init__(
             prompt_template, max_tokens=8192, hf_args=["emozilla/pg19-test"], **kwargs
         )

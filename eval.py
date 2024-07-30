@@ -284,15 +284,16 @@ def run_task(
         # For toks_per_sec, we also want to report the average of the highest 10% toks/second
         # This is useful to get a sense of toks / second without the one-time impact of compilation
         if "toks_per_sec" in k:
+            # Useful to save toks_per_sec for each example for better understanding of how it changes over time with compile
+            task_metrics[k] = v
+            # Also save the top 10% average (likely unaffected by compile)
             v.sort()
             task_metrics[f"{k}_top_10p"] = sum(v[-(len(v) // 10) :]) / (len(v) // 10)
 
-        if "total_seconds":
-            task_metrics["total_seconds_min"] = min(aggregate_metrics["total_seconds"])
-            task_metrics["total_seconds_max"] = max(aggregate_metrics["total_seconds"])
-            task_metrics["total_seconds_median"] = float(
-                np.median(aggregate_metrics["total_seconds"])
-            )
+        if k == "total_seconds":
+            task_metrics[f"{k}_min"] = min(aggregate_metrics[k])
+            task_metrics[f"{k}_max"] = max(aggregate_metrics[k])
+            task_metrics[f"{k}_median"] = float(np.median(aggregate_metrics[k]))
 
     if task.requires_perplexity:
         pred_df = None
