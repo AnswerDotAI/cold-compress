@@ -39,11 +39,12 @@ MAX_JOBS=8 pip install flash-attn --no-build-isolation # Set MAX_JOBS to a lower
 pip install -r requirements.txt
 ```
 
-After logging in with `huggingface-cli login`, run
+After logging in with `huggingface-cli login`, run any of the following:
 
 ```bash
 bash scripts/prepare_llama2.sh
 bash scripts/prepare_llama3.sh
+bash scripts/prepare_llama31.sh
 bash scripts/prepare_qwen2.sh
 ```
 
@@ -117,11 +118,19 @@ Use `generate.py` to vibe test methods on individual prompts.
 
 For benchmarking, use `eval.py` which supports evals on a *growing* list of long-context tasks: domain-specific ([Dolomites](https://dolomites-benchmark.github.io/index.html)), synthetic ([RULER](https://arxiv.org/abs/2404.06654)), QA ([MuSiQue](https://arxiv.org/abs/2108.00573v3), [TriviaQA](https://nlp.cs.washington.edu/triviaqa/), [QuALITY](https://arxiv.org/abs/2112.08608)), coding ([RepoBench](https://arxiv.org/abs/2306.03091)), summarization ([QMSum](https://arxiv.org/abs/2104.05938), [SQuALITY](https://arxiv.org/abs/2205.11465)), and long generation ([PG-19 book corpus](https://github.com/google-deepmind/pg19)).
 
+Before running `eval.py`, make sure to set the `ANTHROPIC_API_KEY` environment variable if you want to use `LLM-ROUGE` (see below). Alternatively, comment out mentions of **LLM-Rouge** in `task.py`.
+
+```
+"LLM-Rouge": AutoMetric.from_name("llm-rouge"),
+```
+
+After doing this, you can run:
+
 ```
 python eval.py --compile --cache_config hybrid --tasks dolomites rulerniah
 ```
 
-Will apply the cache strategy specified in `./cache_configs/hybrid.yaml` and test on Dolomites and RULER needle-in-a-haystack.
+It will apply the cache strategy specified in `./cache_configs/hybrid.yaml` and test on Dolomites and RULER needle-in-a-haystack.
 
 `eval.py` creates a directory based on the supplied cache arguments to dump the raw predictions and metrics for memory usage and task-specific performance.
 

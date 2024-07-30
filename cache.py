@@ -247,7 +247,7 @@ class KVCache(ABC, nn.Module):
 
     def update_kv(self, input_pos, k_val, v_val, is_prefill, **kwargs):
         """
-        Cache-specific update logic.
+        Cache update logic.
         Takes in the input positions and the corresponding k and v values.
         Modifies self.pos, self.k_cache, self.v_cache place.
 
@@ -619,7 +619,8 @@ class KVCacheHeavyHitter(KVCacheHeadSpecific):
         self.attn_counter += 1
 
     def _eviction_idx(self, input_pos):
-        # Identify the tokens with consistently "low" attentions
+        # Identify the token with consistently "lowest" attention
+
         numerator = self.attn_history_num.sum(dim=-1).float()
         # The denominator is the number of times this token's history has been recorded
         # We only record most self.history_window_size recent scores so need to clamp it
