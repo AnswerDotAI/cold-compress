@@ -26,7 +26,7 @@ First, either manually [download PyTorch nightly](https://pytorch.org/get-starte
 For PyTorch Nightly, (replace CUDA version if not `12.1`):
 
 ```
-pip install torch==2024.7.30 -f https://download.pytorch.org/whl/nightly/cu121/torch_nightly.html
+pip install torch==2024.x.xx -f https://download.pytorch.org/whl/nightly/cu121/torch_nightly.html
 ```
 
 (Alternatively, you can install everything which is needed by creating a fresh conda environment and running the following command:
