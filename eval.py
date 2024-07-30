@@ -447,14 +447,13 @@ def main(
 
 
 def setup(args) -> Path:
+    sub_dir = args_to_str(args) if args.out_dir is None else args.out_dir
     out_dir = (
         Path(__file__).parent
         / "results"
         / args.checkpoint_path.parent.name
         / "__".join(compress_list(args.cache_strategy))
-        / args_to_str(args)
-        if args.out_dir is None
-        else args.out_dir
+        / sub_dir
     )
 
     print(f"Saving to {out_dir}")
