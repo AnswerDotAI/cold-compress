@@ -23,6 +23,12 @@ The intended effect is that **Cold Compress** is easy to follow, customizable fr
 
 First, manually [download PyTorch nightly](https://pytorch.org/get-started/locally/), nvcc, and friends.
 
+An example PyTorch pip command for CUDA 12.1:
+
+```
+pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu121
+```
+
 (Alternatively, you can install everything which is needed by creating a fresh conda environment and running the following command:
 
 ```bash
