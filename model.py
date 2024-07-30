@@ -111,17 +111,6 @@ transformer_configs = {
         rope_base=500000,
         max_length=8192,
     ),
-    "Meta-Llama-3-8B-Instruct-4-Layers": dict(
-        block_size=8192,
-        n_layer=4,
-        n_head=32,
-        n_local_heads=8,
-        dim=4096,
-        intermediate_size=14336,
-        vocab_size=128256,
-        rope_base=500000,
-        max_length=8192,
-    ),
     "Meta-Llama-3.1-8B-Instruct": dict(
         block_size=131072,
         n_layer=32,

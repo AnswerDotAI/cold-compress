@@ -90,11 +90,9 @@ We can run:
 python generate.py --compile --prompt reverse_list.txt --checkpoint_path ./checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth --cache_strategy recent_global --max_cache_length 0.5 --global_tokens 4 --prompt_compression_strategy recent_global
 ```
 
-`max_cache_length`: size of the KV cache represented as a fraction of total sequence length (`|prompt| + max_new_tokens`). You can also specify `max_cache_length` as an integer `> 1` to set the exact size.
-
-`global_tokens`: the number of lead tokens to always keep in the KV cache. Lead tokens are [attention sinks](https://arxiv.org/abs/2309.17453) and should always be preserved.
-
-`prompt_compression_strategy`: the strategy for filtering tokens during prefill **iff** `|prompt| > max_cache_length`. Choose a strategy from `prompt_compression.py`. Here, we chose a strategy `recent_window` to match our KV Cache strategy.
+- `max_cache_length`: size of the KV cache represented as a fraction of total sequence length (`|prompt| + max_new_tokens`). You can also specify `max_cache_length` as an integer `> 1` to set the exact size.
+- `global_tokens`: the number of lead tokens to always keep in the KV cache. Lead tokens are [attention sinks](https://arxiv.org/abs/2309.17453) and should always be preserved.
+- `prompt_compression_strategy`: the strategy for filtering tokens during prefill **iff** `|prompt| > max_cache_length`. Choose a strategy from `prompt_compression.py`. Here, we chose a strategy `recent_global` to match our KV Cache strategy.
 
 ## Using a Cache Config
 
@@ -170,7 +168,7 @@ The first is to provide a set of cache_configs, cache_sizes, and tasks which you
 
 ```
 python parallelize_evals.py \
-    --config_names random l2 heavy_hitter window \
+    --config_names random l2 heavy_hitter recent_global \
     --tasks truthfulqa rulerqa rulerniah rulervt rulercwe scrollsquality musique squality dolomites qmsum repobench \
     --cache_sizes 0.75 0.5 0.25 0.1 0.05 \
     --num_samples 500 \
@@ -372,7 +370,7 @@ We use `fill_contiguous` and only specify the `start` and `end` indices if we ne
 
 Now that we have a `Keep-It-Odd` cache strategy, we need to figure out what to do when the prompt sequence length is greater than the specified cache size.
 
-We can use an existing prompt compression method by passing in `--prompt_compression_strategy recent_window`, or we can create a new one which also implements our odd logic.
+We can use an existing prompt compression method by passing in `--prompt_compression_strategy recent_global`, or we can create a new one which also implements our odd logic.
 
 To do this, we will create a `PromptCompressorKeepItOdd` class in `prompt_compression.py`:
 
@@ -506,6 +504,7 @@ We are actively exploring supporting the following in `Cold Compress`:
 3. [Cross Layer Attention](https://arxiv.org/abs/2405.12981).
 4. Bayesian optimization to find optimal hybrid strategy.
 5. KV-Cache Lite Architectures, e.g., [YOCO](https://arxiv.org/abs/2405.05254), [GoldFinch](https://arxiv.org/abs/2407.12077), [Infini-attention](https://arxiv.org/abs/2404.07143), [LoMA](https://arxiv.org/abs/2401.09486), [Block Transformer](https://arxiv.org/abs/2406.02657).
+6. [Importance-aware quantization](https://arxiv.org/abs/2402.18096)
 
 ## Getting Involved with Eval
 
@@ -649,6 +648,7 @@ We are interested in adding support for:
 
 **`--cache_strategy [{recent_global, heavy_hitter, ...}, full] --cache_strategy_pattern {tile,repeat}`**
 
+```
 @article{beltagy2020longformer,
   title={Longformer: The long-document transformer},
   author={Beltagy, Iz and Peters, Matthew E and Cohan, Arman},
@@ -661,3 +661,4 @@ We are interested in adding support for:
   url={https://storage.googleapis.com/deepmind-media/gemma/gemma-2-report.pdf},
   year={2024}
 }
+```
