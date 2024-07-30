@@ -31,11 +31,9 @@ conda install python=3.10.12 cuda-nvcc pytorch torchvision torchaudio pytorch-cu
 
 That is all.)
 
-Second, pip install these requirements:
+Then, 
 
 ```bash
-pip install packaging ninja
-MAX_JOBS=8 pip install flash-attn --no-build-isolation # Set MAX_JOBS to a lower value if you get OOM errors.
 pip install -r requirements.txt
 ```
 
