@@ -6,7 +6,7 @@ Created at [Answer.AI](https://www.answer.ai/), **Cold Compress** is built on to
 
 ![KV Cache Compression Diagram](images/kv_cache_compression.png)
 
-Please see our [blog post](www.todo.com) for a *very* deep dive into the KV Cache, cache compression, and the *many* SOTA strategies supported by **Cold Compress**.
+Please see our [blog post](www.todo.com) for a *very* deep dive into the KV Cache, cache compression, and the many SOTA strategies supported by **Cold Compress**.
 
 Our initial release (**Cold Compress 1.0**) supports a wide set of popular approaches to KV cache compression, including:
 - Attention-based evictions, e.g., `Heavy Hitters`
@@ -52,7 +52,7 @@ bash scripts/prepare_llama2.sh
 bash scripts/prepare_qwen2.sh
 ```
 
-This will download model and tokenizer files from HuggingFace for [`Meta-Llama-3.1-8B-Instruct`](https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct), [`Meta-Llama-3-8B-Instruct`](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct), [`meta-llama/Llama-2-7b-chat-hf`](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf) and [`Qwen/Qwen2-7B-Instruct`](https://huggingface.co/Qwen/Qwen2-7B-Instruct) and save them into a usable format inside `./checkpoints`.
+This will download model and tokenizer files from HuggingFace for any one of [`Meta-Llama-3.1-8B-Instruct`](https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct), [`Meta-Llama-3-8B-Instruct`](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct), [`meta-llama/Llama-2-7b-chat-hf`](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf) or [`Qwen/Qwen2-7B-Instruct`](https://huggingface.co/Qwen/Qwen2-7B-Instruct) respectively and save them into a usable format inside `./checkpoints`.
 
 Please raise an [issue](https://github.com/AnswerDotAI/context-compression/issues) or join our [public Discord server](https://discord.gg/NvERJKrEdA) if you would like to see more models supported or collaborate on new releases.
 
@@ -70,7 +70,7 @@ If you want to run on longer prompts, you can add it as a *.txt* file to `./prom
 ![Flow of Information between model and KV Cache](images/kv_cache_flow.png)
 *Capturing the flow of information between a model (attention) and the KV Cache.*
 
-To use a compressed KV cache, specify a `cache_strategy != "full"`, e.g., `"recent_global"`, `"heavy_hitter"`, `"hybrid"`, `"random"`, `"l2"`.
+To use a compressed KV cache, specify a `--cache_strategy` other than  `"full"`, e.g., `"recent_global"`, `"heavy_hitter"`, `"hybrid"`, `"random"`, `"l2"`.
 
 Check out all the available cache strategies in `def get_cache_constructor` from `cache.py`.
 
@@ -118,7 +118,7 @@ global_tokens: 4
 
 Use `generate.py` to vibe test methods on individual prompts.
 
-For benchmarking, use `eval.py` which supports evals on a *growing* list of long-context tasks: domain-specific ([Dolomites](https://dolomites-benchmark.github.io/index.html)), synthetic ([RULER](https://arxiv.org/abs/2404.06654)), QA ([MuSiQue](https://arxiv.org/abs/2108.00573v3), [TriviaQA](https://nlp.cs.washington.edu/triviaqa/), [QuALITY](https://arxiv.org/abs/2112.08608)), coding ([RepoBench](https://arxiv.org/abs/2306.03091)), summarization ([QMSum](https://arxiv.org/abs/2104.05938), [SQuALITY](https://arxiv.org/abs/2205.11465)), and long generation ([PG-19 book corpus](https://github.com/google-deepmind/pg19)).
+For benchmarking, use `eval.py` which supports evals on a growing list of long-context tasks: domain-specific ([Dolomites](https://dolomites-benchmark.github.io/index.html)), synthetic ([RULER](https://arxiv.org/abs/2404.06654)), QA ([MuSiQue](https://arxiv.org/abs/2108.00573v3), [TriviaQA](https://nlp.cs.washington.edu/triviaqa/), [QuALITY](https://arxiv.org/abs/2112.08608)), coding ([RepoBench](https://arxiv.org/abs/2306.03091)), summarization ([QMSum](https://arxiv.org/abs/2104.05938), [SQuALITY](https://arxiv.org/abs/2205.11465)), and long generation ([PG-19 book corpus](https://github.com/google-deepmind/pg19)).
 
 Before running `eval.py`, make sure to set the `ANTHROPIC_API_KEY` environment variable if you want to use `LLM-ROUGE` (see below). Alternatively, comment out mentions of **LLM-Rouge** in `task.py`.
 
@@ -140,9 +140,9 @@ It will apply the cache strategy specified in `./cache_configs/hybrid.yaml` and 
 
 *See `metric.py` for a full list of supported metrics*
 
-For multiple-choice QA, we measure accuracy by comparing the log likelihoods of generating each answer option, as in [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness).
+For multiple-choice QA, we measure accuracy by comparing the loglikelihoods of generating each answer option, as in [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness).
 
-For free-text generation, we record standard reference-based metrics, [ROUGE](https://huggingface.co/spaces/evaluate-metric/rouge) and [BERTScore](https://huggingface.co/spaces/evaluate-metric/bertscore). Yet, given well documented limitations of these metrics, we focus on a new metric `LLM-Rouge`. `LLM-Rouge` prompts an LLM ([Claude Haiku](https://www.anthropic.com/news/claude-3-haiku)) to judge the similarity of a model generated text with one or more ground-truths on a 1-5 LIKERT scale:
+For free-text generation, we record standard reference-based metrics, [ROUGE](https://huggingface.co/spaces/evaluate-metric/rouge) and [BERTScore](https://huggingface.co/spaces/evaluate-metric/bertscore). Yet, given well documented limitations of these metrics, we focus on a new metric `LLM-Rouge`. `LLM-Rouge` prompts an LLM ([Claude 3 Haiku](https://www.anthropic.com/news/claude-3-haiku)) to judge the similarity of a model generated text with one or more ground-truths on a 1-5 LIKERT scale, using the following prompt format:
 
 ```
 TEMPLATE = """You are shown ground-truth answer(s) and asked to judge the quality of an LLM-generated answer.
@@ -162,7 +162,7 @@ We elicit Claude Haiku responses using Answer.AI's Anthropic wrapper [Claudette]
 
 ### Parallelizing Eval
 
-As of now, GPT-Fast and, by extension, **Cold Compress**, only supports single batch, single GPU inference. *(We are working on adding batched multi-GPU inference.)*
+As of now, GPT-Fast and, by extension, **Cold Compress**, only supports batch size one inference. Cold Compress does not yet support multi-GPU tensor parallel inference as well. *(We are working on adding batched multi-GPU inference.)*
 
 To take advantage of multiple GPUs, we’ve written a script to parallelize eval jobs. 
 
@@ -213,12 +213,12 @@ A recent [blogpost from Character.ai](https://research.character.ai/optimizing-i
 
 In addition to using multi-query attention (MQA), they introduce two modifications:
 1. Alternating **Local-Global** layers
-2. **Cross-Layer Attention**: this is basically MQA across layers. Coming soon to **Cold Compress**!
+2. **Cross-Layer Attention**: this is basically MQA with additional KV sharing across layers. Coming soon to **Cold Compress**!
 
 ![Local-Global Attention](images/local_global_from_character_ai.png)
 
 
-**Local-Global** attention is intriguing because it enables compression without losing the full history, which is preserved at certain layers.
+Cache compression strategies emulating the **Local-Global** attention architecture is intriguing because it enables compression without losing the full history, which is preserved at certain layers.
 
 In **Cold Compress**, **Local-Global** is just a mix of cache strategies (`RecentGlobal` and `Full`) across layers:
 
@@ -253,13 +253,13 @@ There is no consensus regarding the optimal allocation of a KV cache budget acro
 
 While [PyramidKV](https://arxiv.org/abs/2406.02069) proposes increasing compression at higher layers, [ScissorHands](https://arxiv.org/abs/2305.17118) advocates for the opposite. ScissorHands finds that `Heavy Hitters` are more variable at higher layers, so larger caches are needed to reduce cache misses.
 
-Most other work proposes a uniform cache size.
+Most other work proposes a uniform cache size across layers.
 
 We introduce `--cache_length_pattern` to enable experimentation around this important hyper-parameter.
 
 To use a pyramid cache pattern, you can set `--cache_length_pattern pyramid`.
 
-Alternatively, `--cache_length_pattern pyramid` funnel will decrease
+Alternatively, `--cache_length_pattern funnel` will invert this, using greater cache sizes at later layers.
 
 The value passed for `--max_cache_length` represents the average cache size for pyramids and funnels.
 
@@ -302,7 +302,7 @@ A handful of debugging experiments can be kicked off by running:
 bash experiments/attention_loss.sh
 ```
 
-These experiments record Attention Loss at various decoding steps. From these experiments, which record PPL on [PG-19 Book Corpus](https://github.com/google-deepmind/pg19), we can show a clear correlation between Attention Loss and downstream performance (PPL).
+These experiments record Attention Loss at various decoding steps. From these experiments, which record PPL on the [PG-19 Book Corpus](https://github.com/google-deepmind/pg19), we can show a clear correlation between Attention Loss and downstream performance (PPL).
 
 ![Attention Loss Results](images/attention_loss_pg19.png)
 
@@ -313,7 +313,7 @@ This suggests that **Attention Loss** might be an decent proxy to approximate do
 ### Adding a new Cache Strategy
 We’ll walk through the process of creating a made-up cache eviction strategy called `KVCacheKeepItOdd`.
 
-`KVCacheKeepItOdd` is funky!  It only keeps the positions in odd, in addition to the first $n$ tokens (specified by `--global_tokens`) and the most recent $m$ tokens (specified by `--recent_window`).
+`KVCacheKeepItOdd` is funky!  It only keeps odd-indexed token positions, in addition to the first $n$ tokens (specified by `--global_tokens`) and the most recent $m$ tokens (specified by `--recent_window`).
 
 In `cache.py` we’ll create a new class (`KVCacheKeepItOdd`), add it to the registry of caches (`get_cache_constructor`), and make it available as a command-line arg in `add_cache_arguments`.
 
@@ -491,7 +491,7 @@ TASK_MAPPING = {
 
 # Getting Involved
 
-We'd **love** for you to get involved and collectively aim to improve `Cold Compress` for future releases.
+We'd **love** for you to get involved and collectively aim to improve `Cold Compress` for future releases. There are various ways to get involved:
 
 1. Participate in discussions of KV Cache Compression on our [public Discord server](https://discord.gg/NvERJKrEdA).
 2. Raise an [issue](https://github.com/AnswerDotAI/context-compression/issues) for something you'd like to see fixed, improved, or built.
@@ -504,7 +504,7 @@ We are actively exploring supporting the following in `Cold Compress`:
 1. [GIST tokens](https://arxiv.org/abs/2304.08467).
 2. CPU offloading of ``evicted'' tokens, e.g., [InfLLM](https://arxiv.org/abs/2402.04617).
 3. [Cross Layer Attention](https://arxiv.org/abs/2405.12981).
-4. Bayesian optimization to find optimal hybrid strategy.
+4. Bayesian optimization to find optimal hybrid strategies.
 5. KV-Cache Lite Architectures, e.g., [YOCO](https://arxiv.org/abs/2405.05254), [GoldFinch](https://arxiv.org/abs/2407.12077), [Infini-attention](https://arxiv.org/abs/2404.07143), [LoMA](https://arxiv.org/abs/2401.09486), [Block Transformer](https://arxiv.org/abs/2406.02657).
 6. [Importance-aware quantization](https://arxiv.org/abs/2402.18096)
 
@@ -522,7 +522,7 @@ We are interested in adding support for:
 
 # Citations
 
-**Cold Compress** implements methods introduced in existing work. If you it it in *your* work, please make sure to cite the following:
+**Cold Compress** implements methods introduced in existing work. If you use it in *your* work, please make sure to cite the following works that correspond to the methods you used:
 
 ## Recent Global
 
