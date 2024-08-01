@@ -520,7 +520,7 @@ We are interested in adding support for:
 }
 ```
 
-And more importantly, please cite the following works that correspond to the methods you used:
+But more importantly, please cite the following works that correspond to the methods you used:
 
 ## Recent Global
 
