@@ -27,23 +27,30 @@ pip install -r requirements.txt --extra-index-url https://download.pytorch.org/w
 After logging in with `huggingface-cli login`, run any of the following:
 
 ```bash
-bash scripts/prepare_llama31.sh
 bash scripts/prepare_llama3.sh
 bash scripts/prepare_llama2.sh
 bash scripts/prepare_qwen2.sh
 ```
 
-This will download model and tokenizer files from HuggingFace for any one of [`Meta-Llama-3.1-8B-Instruct`](https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct), [`Meta-Llama-3-8B-Instruct`](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct), [`meta-llama/Llama-2-7b-chat-hf`](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf) or [`Qwen/Qwen2-7B-Instruct`](https://huggingface.co/Qwen/Qwen2-7B-Instruct) respectively and save them into a usable format inside `./checkpoints`.
+This will download model and tokenizer files from HuggingFace for any one of [`Meta-Llama-3-8B-Instruct`](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct), [`meta-llama/Llama-2-7b-chat-hf`](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf) or [`Qwen/Qwen2-7B-Instruct`](https://huggingface.co/Qwen/Qwen2-7B-Instruct) respectively and save them into a usable format inside `./checkpoints`.
+
+We are working on [`Meta-Llama-3.1-8B-Instruct`](https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct), which is available with:
+
+```bash
+bash scripts/prepare_llama31.sh
+```
+
+Yet is currently untested.
 
 Please raise an [issue](https://github.com/AnswerDotAI/context-compression/issues) or join our [public Discord server](https://discord.gg/NvERJKrEdA) if you would like to see more models supported or collaborate on new releases.
 
 ## Quick Start
 
 ```
-python generate.py --cache_strategy full --prompt "What is a cold compress?" --checkpoint_path ./checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth
+python generate.py --cache_strategy full --prompt "What is a cold compress?" --checkpoint_path ./checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth
 ```
 
-This will generate a response from a compiled Llama-3.1 with no cache compression (`--cache_strategy full`).
+This will generate a response from a compiled Llama-3 with no cache compression (`--cache_strategy full`).
 If you want to run on longer prompts, you can add it as a *.txt* file to `./prompts` and run with `python generate.py --prompt my_custom_prompt.txt`. We've also pre-populated `prompts` with a few diverse prompts!
 
 ## Important Note on `--compile`
@@ -113,7 +120,7 @@ global_tokens: 4
 We can then reduce the length of the above command:
 
 ```
-python generate.py --prompt reverse_list.txt --checkpoint_path ./checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth --max_cache_length 0.5 --cache_config recent_global
+python generate.py --prompt reverse_list.txt --checkpoint_path ./checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth --max_cache_length 0.5 --cache_config recent_global
 ```
 
 This can come in handy for strategies with many more hyper-parameters!
@@ -182,7 +189,7 @@ python parallelize_evals.py \
     --num_samples 500 \
     --add_full \
     --num_gpus 8 \
-    --checkpoint_path checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth
+    --checkpoint_path checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth
 ```
 
 This command will take the cartesian product of the `config_names`, `tasks`, and `cache_sizes`, and create the appropriate evaluation jobs and queue them across 8 GPU workers.
@@ -243,7 +250,7 @@ global_tokens: 4
 
 We set a dynamic strategy by passing a list of strategies to `cache_strategy` and then control the pattern by setting `cache_strategy_pattern` to “repeat” which alternates the two. “tile” sets the first `N // 2` layers to full and the final `N // 2` layers to full.
 
-You can pass in a `cache_strategy` of any length, provided it is a factor of the number of layers in the model (`32` for `Llama-3.1-8B`).
+You can pass in a `cache_strategy` of any length, provided it is a factor of the number of layers in the model (`32` for `Llama-3-8B`).
 
 You can run a pre-configured set of local-global experiments with:
 

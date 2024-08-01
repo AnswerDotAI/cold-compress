@@ -749,7 +749,7 @@ if __name__ == "__main__":
         "--checkpoint_path",
         type=Path,
         default=Path(__file__).resolve().parent
-        / "checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth",
+        / "checkpoints/meta-llama/Meta-Llama-3-8B-Instruct/model.pth",
         help="Model checkpoint path.",
     )
     parser.add_argument(
