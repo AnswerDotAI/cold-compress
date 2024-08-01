@@ -1,11 +1,10 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from pathlib import Path
 
 
 if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    import numpy as np
     # Define the data
     df = pd.read_csv("/workspace/attention_loss.csv")
 
@@ -64,4 +63,8 @@ if __name__ == "__main__":
     plt.title("Attention Loss & Perplexity vs Decoding Steps", fontsize=32)
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig("/workspace/cold-compress/charts/attention_loss.png")
+    # Save a plot to ../images directory
+    # Get the current directory
+    current_dir = Path(__file__).resolve().parent
+    # Save the plot to the desired path
+    plt.savefig(current_dir.parent / "images" / "attention_loss_pg19.png")
