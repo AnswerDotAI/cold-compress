@@ -507,9 +507,15 @@ We are interested in adding support for:
 
 # Citations
 
-**Cold Compress** implements methods introduced in existing work. If you use it in *your* work, please make sure to cite our blogpost:
+**Cold Compress** implements methods introduced in existing work. If you use it in *your* work, please make sure to cite the GPT-Fast blogpost and our own:
 
 ```
+@misc{gpt-fast,
+  title={Accelerating generative ai with pytorch ii: Gpt, fast.},
+  author={Team PyTorch},
+  year={2023},
+  url={https://pytorch.org/blog/accelerating-generative-ai-2/}
+}
 @misc{cold-compress-2024,
   title={Cold Compress: A Toolkit for Benchmarking KV Cache Compression Approaches},
   author={Adams, Griffin and Ladhak, Faisal and Schoelkopf, Hailey, and Biswas, Raja},
