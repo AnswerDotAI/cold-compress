@@ -6,7 +6,7 @@ Created at [Answer.AI](https://www.answer.ai/), **Cold Compress** is built on to
 
 ![KV Cache Compression Diagram](images/kv_cache_compression.png)
 
-Please see our [blog post](www.todo.com) for a *very* deep dive into the KV Cache, cache compression, and the many SOTA strategies supported by **Cold Compress**.
+Please see our [blog post](https://www.answer.ai/posts/2024-08-01-cold-compress.html) for a *very* deep dive into the KV Cache, cache compression, and the many SOTA strategies supported by **Cold Compress**.
 
 Our initial release (**Cold Compress 1.0**) supports a wide set of popular approaches to KV cache compression, including:
 - Attention-based evictions, e.g., `Heavy Hitters`
@@ -522,7 +522,7 @@ We are interested in adding support for:
   month=8,
   year=2024,
   version={v1.0},
-  url={https://AnswerDotAI/cold-compress/TODO}
+  url={https://www.answer.ai/posts/2024-08-01-cold-compress.html}
 }
 ```
 
