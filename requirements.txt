@@ -1,3 +1,5 @@
+torch @ https://download.pytorch.org/whl/nightly/cu121/torch-2.5.0.dev20240723%2Bcu121-cp311-cp311-linux_x86_64.whl
+pytorch-triton @ https://download.pytorch.org/whl/nightly/pytorch_triton-3.0.0%2Bdedb7bdf33-cp311-cp311-linux_x86_64.whl
 absl-py
 accelerate
 bert-score
