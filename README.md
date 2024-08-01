@@ -76,19 +76,18 @@ Each cache strategy has a unique set of hyper-parameters controllable from the c
 For instance, to customize sliding-window attention with a global attention sink (`recent_global`), check out its hyper-parameters by looking at the `relevant_kwargs` attribute of the `KVCacheRecentGlobal` class.
 
 ```
-class KVCacheRecentGlobal(KVCache):
+class KVCacheRecentGlobal(KVCacheHeadConstant):
     relevant_kwargs = [
         "max_cache_length",
         "max_seq_length",
         "global_tokens",
-        "prompt_compression_strategy",
     ]
 ```
 
 We can run:
 
 ```
-python generate.py --prompt reverse_list.txt --checkpoint_path ./checkpoints/meta-llama/Meta-Llama-3.1-8B-Instruct/model.pth --cache_strategy recent_global --max_cache_length 0.5 --global_tokens 4 --prompt_compression_strategy recent_global
+python generate.py --prompt reverse_list.txt --cache_strategy recent_global --max_cache_length 0.5 --global_tokens 4 --prompt_compression_strategy recent_global
 ```
 
 - `max_cache_length`: size of the KV cache represented as a fraction of total sequence length (`|prompt| + max_new_tokens`). You can also specify `max_cache_length` as an integer `> 1` to set the exact size.
