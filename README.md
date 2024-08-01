@@ -20,27 +20,8 @@ Our initial release (**Cold Compress 1.0**) supports a wide set of popular appro
 The intended effect is that **Cold Compress** is easy to follow, customizable from the command line, and low effort to extend! The code should be able to be configured or slightly tweaked to exactly match existing methods.
 
 ## Installation
-
-First, manually [download PyTorch nightly](https://pytorch.org/get-started/locally/), nvcc, and friends.
-
-An example PyTorch pip command for CUDA 12.1:
-
-```
-pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu121
-```
-
-(Alternatively, you can install everything which is needed by creating a fresh conda environment and running the following command:
-
 ```bash
-conda install python=3.10.12 cuda-nvcc pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
-```
-
-That is all.)
-
-Then, 
-
-```bash
-pip install -r requirements.txt
+pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/nightly/
 ```
 
 After logging in with `huggingface-cli login`, run any of the following:
