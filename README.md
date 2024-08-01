@@ -527,7 +527,20 @@ We are interested in adding support for:
 
 # Citations
 
-**Cold Compress** implements methods introduced in existing work. If you use it in *your* work, please make sure to cite the following works that correspond to the methods you used:
+**Cold Compress** implements methods introduced in existing work. If you use it in *your* work, please make sure to cite our blogpost:
+
+```
+@misc{cold-compress-2024,
+  title={Cold Compress: A Toolkit for Benchmarking KV Cache Compression Approaches},
+  author={Adams, Griffin and Ladhak, Faisal and Schoelkopf, Hailey, and Biswas, Raja},
+  month=8,
+  year=2024,
+  version={v1.0},
+  url={https://AnswerDotAI/cold-compress/TODO}
+}
+```
+
+And more importantly, please cite the following works that correspond to the methods you used:
 
 ## Recent Global
 
