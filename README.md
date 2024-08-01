@@ -166,7 +166,7 @@ We elicit Claude Haiku responses using Answer.AI's Anthropic wrapper [Claudette]
 
 ### Parallelizing Eval
 
-As of now, GPT-Fast and, by extension, **Cold Compress**, only supports batch size one inference. Cold Compress does not yet support multi-GPU tensor parallel inference as well. *(We are working on adding batched multi-GPU inference.)*
+As of now, GPT-Fast and, by extension, **Cold Compress**, only supports batch size one inference. *(We are working on adding batched multi-GPU inference.)*
 
 To take advantage of multiple GPUs, we’ve written a script to parallelize eval jobs. 
 
