@@ -12,7 +12,6 @@ import argparse
 import yaml
 from model import Transformer, find_multiple
 from tokenizer import TokenizerInterface
-import regex as re
 
 default_device = "cuda" if torch.cuda.is_available() else "cpu"
 

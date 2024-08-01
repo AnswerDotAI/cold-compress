@@ -119,10 +119,13 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
 
 
 def cache_compatibility(args):
-    for (
-        length,
-        cache_strat,
-    ) in zip(args.max_cache_length, args.cache_strategy):
+    for length, cache_strat, prompt_strat in zip(
+        args.max_cache_length, args.cache_strategy, args.prompt_compression_strategy
+    ):
+        if cache_strat == "heavy_hitter":
+            assert (
+                prompt_strat == "heavy_hitter"
+            ), "Heavy Hitter cache strategy currently must be run with --prompt_compression_strategy heavy_hitter to return attention."
         if cache_strat == "hybrid":
             assert (
                 not args.compile
