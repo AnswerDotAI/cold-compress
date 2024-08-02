@@ -2,6 +2,12 @@
 
 **Cold Compress** is a **hackable**, **lightweight**, **open source** toolkit for creating, extending, and comparing **KV cache compression** methods.
 
+<p align="center" width="100%">
+    <img width="40%" src="images/cold_compress_logo.jpg">
+	<br>
+    <em>Logo for Cold Compress built with Flux.1</em>
+</p>
+
 Created at [Answer.AI](https://www.answer.ai/), **Cold Compress** is built on top of [GPT-Fast](https://github.com/pytorch-labs/gpt-fast/), a simple, PyTorch-native generation codebase. It takes advantage of [torch.compile](https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html), which allows for GPU efficient code to be written in PyTorch without customized kernels.
 
 ![KV Cache Compression Diagram](images/kv_cache_compression.png)
