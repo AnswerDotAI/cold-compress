@@ -100,12 +100,22 @@ class KVCacheRecentGlobal(KVCacheHeadConstant):
 We can run:
 
 ```
-python generate.py --prompt reverse_list.txt --cache_strategy recent_global --max_cache_length 0.5 --global_tokens 4 --prompt_compression_strategy recent_global
+python generate.py --prompt reverse_list.txt --cache_strategy recent_global --max_cache_length 16 --global_tokens 4 --prompt_compression_strategy recent_global
 ```
 
-- `max_cache_length`: size of the KV cache represented as a fraction of total sequence length (`|prompt| + max_new_tokens`). You can also specify `max_cache_length` as an integer `> 1` to set the exact size.
+- `max_cache_length`: size of the KV cache can be represented as a fraction of total sequence length (`|prompt| + max_new_tokens`) or as an integer `> 1` to set the exact size.
 - `global_tokens`: the number of lead tokens to always keep in the KV cache. Lead tokens are [attention sinks](https://arxiv.org/abs/2309.17453) and should always be preserved.
 - `prompt_compression_strategy`: the strategy for filtering tokens during prefill **iff** `|prompt| > max_cache_length`. Choose a strategy from `prompt_compression.py`. Here, we chose a strategy `recent_global` to match our KV Cache strategy.
+
+## Important Note on Compression Ratio
+
+When you specify the cache size as a fraction, the actual cache size is computed as a fraction of *maximum* possible sequence length (`|prompt| + max_new_tokens`).
+
+Yet, the *actual* compression ratio is computed as a fraction of the *actual* sequence length, which equals the `|prompt| + |generation|`.
+
+If the actual generation is much shorter than the maximum allowable, you might notice lower than expected compression ratios.
+
+To address this, you can set an absolute max cache length (`>1`) or, for `generate.py`, lower the `--max_new_tokens` to something closer to what you expect the model to generate.
 
 ## Using a Cache Config
 
@@ -130,6 +140,14 @@ python generate.py --prompt reverse_list.txt --checkpoint_path ./checkpoints/met
 ```
 
 This can come in handy for strategies with many more hyper-parameters!
+
+## Quantized Caches
+
+To store quantized KV values, add the flag `--cache_bits {2,4,8}`.
+
+This is compatible with any cache strategy.
+
+Empirically, little to no degradation occurs with `--cache_bits {4,8}` yet, as of now, 2-bit leads to a serious decline in the quality of generations.
 
 ## Benchmarking Performance
 
