@@ -167,7 +167,6 @@ class KVCache(ABC, nn.Module):
         dtype=torch.bfloat16,
         head_specific=False,  # IFF True, heads can contain different tokens, e.g., cache evictions are "head_specific".
         variable_length=False,  # IFF True, the number of tokens inserted can vary across heads. Only true for KVCacheHybrid.
-        cache_bits=None,
         **kwargs,
     ):
         super().__init__()
@@ -178,9 +177,9 @@ class KVCache(ABC, nn.Module):
 
         self.cache_shape = (max_batch_size, n_heads, self.max_cache_length, head_dim)
 
-        # NOTE: We only support 8-bit quantization for now
-        self.quantize = cache_bits is not None
-        self.n_bit = cache_bits
+        # Quantization: 2, 4, 8 bits supported.
+        self.quantize = self.cache_bits is not None
+        self.n_bit = self.cache_bits
         self.quantization_axis = 2  # Quantize the cache along the sequence length axis
 
         k_cache = torch.zeros(self.cache_shape, dtype=dtype)
@@ -276,7 +275,10 @@ class KVCache(ABC, nn.Module):
         # Final token isn't passed to cache so must -1 from seq_len
         n = seq_len - 1
         assert torch.all(self.cache_cts <= self.max_cache_length)
-        return ((n - self.cache_cts) / n).mean()
+        cache_size = self.cache_cts.clone().float()
+        if self.n_bit is not None:
+            cache_size *= self.n_bit / 16.0
+        return ((n - cache_size) / n).mean()
 
     def quantize_cache(self):
         if self.quantize:
@@ -504,6 +506,7 @@ class KVCacheRandom(KVCacheHeadConstant):
     relevant_kwargs = [
         "max_cache_length",
         "max_seq_length",
+        "cache_bits",
         "global_tokens",
         "recent_window",
     ]
@@ -525,6 +528,7 @@ class KVCacheRecentGlobal(KVCacheHeadConstant):
     relevant_kwargs = [
         "max_cache_length",
         "max_seq_length",
+        "cache_bits",
         "global_tokens",
         # NB: "recent_window" is ignored as a relevant kwarg. It is fixed to self.max_cache_length - self.global_tokens.
     ]
@@ -556,6 +560,7 @@ class KVCacheL2(KVCacheHeadSpecific):
     relevant_kwargs = [
         "max_cache_length",
         "max_seq_length",
+        "cache_bits",
         "global_tokens",
         "recent_window",
     ]
@@ -613,6 +618,7 @@ class KVCacheHeavyHitter(KVCacheHeadSpecific):
     relevant_kwargs = [
         "max_cache_length",
         "max_seq_length",
+        "cache_bits",
         "global_tokens",
         "history_window_size",
         "recent_window",
@@ -765,6 +771,7 @@ class KVCacheHybrid(KVCacheHeavyHitter):
     relevant_kwargs = [
         "max_cache_length",
         "max_seq_length",
+        "cache_bits",
         "global_tokens",
         "token_ids",
         "min_recovery_frac",
@@ -1291,6 +1298,7 @@ class KVCacheAnalysis(KVCacheFull):
     relevant_kwargs = [
         "max_cache_length",
         "max_seq_length",
+        "cache_bits",
         "history_window_size",
         "recent_window",
         "attn_thresholding",
@@ -1416,6 +1424,7 @@ class KVCacheKeepItOdd(KVCacheHeadConstant):
     relevant_kwargs = [
         "max_cache_length",
         "max_seq_length",
+        "cache_bits",
         "global_tokens",
         "recent_window",
     ]
