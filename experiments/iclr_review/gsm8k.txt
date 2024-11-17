@@ -1,0 +1,10 @@
+python eval.py --cache_config fastgen --max_cache_length 0.1 --tasks gsm --num_samples 500
+python eval.py --cache_config fastgen --max_cache_length 0.3 --tasks gsm --num_samples 500
+python eval.py --cache_config fastgen --max_cache_length 0.5 --tasks gsm --num_samples 500
+python eval.py --cache_config fastgen --max_cache_length 0.7 --tasks gsm --num_samples 500
+python eval.py --cache_config fastgen --max_cache_length 0.9 --tasks gsm --num_samples 500
+python eval.py --cache_config heavy_hitter --max_cache_length 0.1 --tasks gsm --num_samples 500
+python eval.py --cache_config heavy_hitter --max_cache_length 0.3 --tasks gsm --num_samples 500
+python eval.py --cache_config heavy_hitter --max_cache_length 0.5 --tasks gsm --num_samples 500
+python eval.py --cache_config heavy_hitter --max_cache_length 0.7 --tasks gsm --num_samples 500
+python eval.py --cache_config heavy_hitter --max_cache_length 0.9 --tasks gsm --num_samples 500

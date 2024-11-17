@@ -1,0 +1,10 @@
+python eval.py --cache_config l2 --max_cache_length 0.1 --tasks kqa --num_samples 1000 --feed_long_prompts
+python eval.py --cache_config l2 --max_cache_length 0.3 --tasks kqa --num_samples 1000 --feed_long_prompts
+python eval.py --cache_config l2 --max_cache_length 0.5 --tasks kqa --num_samples 1000 --feed_long_prompts
+python eval.py --cache_config l2 --max_cache_length 0.7 --tasks kqa --num_samples 1000 --feed_long_prompts
+python eval.py --cache_config l2 --max_cache_length 0.9 --tasks kqa --num_samples 1000 --feed_long_prompts
+python eval.py --cache_config lsh_16 --max_cache_length 0.1 --tasks kqa --num_samples 1000 --feed_long_prompts
+python eval.py --cache_config lsh_16 --max_cache_length 0.3 --tasks kqa --num_samples 1000 --feed_long_prompts
+python eval.py --cache_config lsh_16 --max_cache_length 0.5 --tasks kqa --num_samples 1000 --feed_long_prompts
+python eval.py --cache_config lsh_16 --max_cache_length 0.7 --tasks kqa --num_samples 1000 --feed_long_prompts
+python eval.py --cache_config lsh_16 --max_cache_length 0.9 --tasks kqa --num_samples 1000 --feed_long_prompts

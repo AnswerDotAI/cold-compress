@@ -1,5 +1,5 @@
-torch==2.5.0.dev20240723+cu121
-pytorch-triton==3.0.0+dedb7bdf33
+torch
+pytorch-triton
 absl-py
 accelerate
 bert-score
@@ -18,4 +18,6 @@ safetensors
 scikit-learn
 sentencepiece
 tiktoken
+einops
+openai
 git+https://github.com/google-research/bleurt.git

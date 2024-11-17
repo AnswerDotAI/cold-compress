@@ -1,0 +1,11 @@
+python eval.py --cache_config l2 --max_cache_length 0.1 --tasks rulerniah --num_samples 100 --feed_long_prompts
+python eval.py --cache_config l2 --max_cache_length 0.3 --tasks rulerniah --num_samples 100 --feed_long_prompts
+python eval.py --cache_config l2 --max_cache_length 0.5 --tasks rulerniah --num_samples 100 --feed_long_prompts
+python eval.py --cache_config l2 --max_cache_length 0.7 --tasks rulerniah --num_samples 100 --feed_long_prompts
+python eval.py --cache_config l2 --max_cache_length 0.9 --tasks rulerniah --num_samples 100 --feed_long_prompts
+python eval.py --cache_config lsh_16 --max_cache_length 0.1 --tasks rulerniah --num_samples 100 --feed_long_prompts
+python eval.py --cache_config lsh_16 --max_cache_length 0.3 --tasks rulerniah --num_samples 100 --feed_long_prompts
+python eval.py --cache_config lsh_16 --max_cache_length 0.5 --tasks rulerniah --num_samples 100 --feed_long_prompts
+python eval.py --cache_config lsh_16 --max_cache_length 0.7 --tasks rulerniah --num_samples 100 --feed_long_prompts
+python eval.py --cache_config lsh_16 --max_cache_length 0.9 --tasks rulerniah --num_samples 100 --feed_long_prompts
+python eval.py --cache_config full --tasks rulerniah --num_samples 100

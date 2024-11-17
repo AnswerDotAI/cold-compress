@@ -1,0 +1,6 @@
+python eval.py --cache_config lsh --lsh_dim 4 --max_cache_length 0.5 --tasks gsm --feed_long_prompts --num_samples 500
+python eval.py --cache_config lsh --lsh_dim 8 --max_cache_length 0.5 --tasks gsm --feed_long_prompts --num_samples 500
+python eval.py --cache_config lsh --lsh_dim 16 --max_cache_length 0.5 --tasks gsm --feed_long_prompts --num_samples 500
+python eval.py --cache_config lsh --lsh_dim 24 --max_cache_length 0.5 --tasks gsm --feed_long_prompts --num_samples 500
+python eval.py --cache_config lsh --lsh_dim 32 --max_cache_length 0.5 --tasks gsm --feed_long_prompts --num_samples 500
+python eval.py --cache_config lsh --lsh_dim 64 --max_cache_length 0.5 --tasks gsm --feed_long_prompts --num_samples 500

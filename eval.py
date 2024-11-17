@@ -373,6 +373,7 @@ def main(
         "num_samples": args.num_samples,
         "tokenizer": tokenizer.encode_prompt if is_chat else tokenizer.encode,
         "seq_length": args.seq_length,
+        "random_seed": args.random_seed,
     }
     if tasks == ["all"]:
         # Evaluate all tasks
@@ -533,6 +534,13 @@ def add_eval_args(parser):
         default=False,
         action="store_true",
         help="If True will truncate cache after prefill and then decode the first token.",
+    )
+
+    parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=0,
+        help="Random seed for reproducibility.",
     )
 
 

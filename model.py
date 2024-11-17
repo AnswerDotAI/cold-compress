@@ -17,6 +17,7 @@ from attention_utils import scaled_dot_product_attention
 from cache import get_cache_constructor
 from prompt_compression import get_prompt_compressor_constructor
 
+from hyper_attn import HyperAttention
 
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
@@ -39,6 +40,9 @@ class ModelArgs:
     attention_bias: bool = False
     max_length: int = 4096
     rope_scaling: Optional[Dict[str, Any]] = None
+
+    #TODO: add parameter to model args and command line args to set T/F
+    use_hyper_attention: bool = False # test hyper attention
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -101,7 +105,7 @@ transformer_configs = {
     "stories15M": dict(n_layer=6, n_head=6, dim=288),
     "stories110M": dict(n_layer=12, n_head=12, dim=768),
     "Meta-Llama-3-8B-Instruct": dict(
-        block_size=8192,
+        block_size=16384, # default is 8192, changed to 16384 for long-bench test
         n_layer=32,
         n_head=32,
         n_local_heads=8,
@@ -109,7 +113,7 @@ transformer_configs = {
         intermediate_size=14336,
         vocab_size=128256,
         rope_base=500000,
-        max_length=8192,
+        max_length=16384, # default is 8192, changed to 16384 for long-bench test
     ),
     "Meta-Llama-3.1-8B-Instruct": dict(
         block_size=131072,
@@ -330,14 +334,23 @@ class TransformerBlock(nn.Module):
 class Attention(nn.Module):
     def __init__(self, config: ModelArgs):
         super().__init__()
-        assert config.dim % config.n_head == 0
-
-        total_head_dim = (config.n_head + 2 * config.n_local_heads) * config.head_dim
-        # key, query, value projections for all heads, but in a batch
-        self.wqkv = nn.Linear(config.dim, total_head_dim, bias=config.attention_bias)
-        self.wo = nn.Linear(config.dim, config.dim, bias=False)
-        self.kv_cache = None
-        self.prompt_compressor = None
+        self.use_hyper_attention = config.use_hyper_attention
+        
+        if self.use_hyper_attention:
+            self.attn = HyperAttention(
+                input_dim=config.head_dim,
+                lsh_num_projs=7,
+                block_size=config.block_size,
+                sample_size=256,
+                min_seq_len=config.max_length
+            )
+        else:
+            assert config.dim % config.n_head == 0
+            total_head_dim = (config.n_head + 2 * config.n_local_heads) * config.head_dim
+            self.wqkv = nn.Linear(config.dim, total_head_dim, bias=config.attention_bias)
+            self.wo = nn.Linear(config.dim, config.dim, bias=False)
+            self.kv_cache = None
+            self.prompt_compressor = None
 
         self.n_head = config.n_head
         self.head_dim = config.head_dim
@@ -370,66 +383,69 @@ class Attention(nn.Module):
         input_pos: Optional[Tensor] = None,
         attn_top_k: Optional[float] = 1.0,
     ) -> Tensor:
-        bsz, seqlen, _ = x.shape
+        if self.use_hyper_attention:
+            return self.attn(x, x, x, causal=True)  # start k q v as equal for self attention?
+        else:
+            bsz, seqlen, _ = x.shape
 
-        kv_size = self.n_local_heads * self.head_dim
-        q, k, v = self.wqkv(x).split([self.dim, kv_size, kv_size], dim=-1)
+            kv_size = self.n_local_heads * self.head_dim
+            q, k, v = self.wqkv(x).split([self.dim, kv_size, kv_size], dim=-1)
 
-        q = q.view(bsz, seqlen, self.n_head, self.head_dim)
-        k = k.view(bsz, seqlen, self.n_local_heads, self.head_dim)
-        v = v.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+            q = q.view(bsz, seqlen, self.n_head, self.head_dim)
+            k = k.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+            v = v.view(bsz, seqlen, self.n_local_heads, self.head_dim)
 
-        q = apply_rotary_emb(q, freqs_cis)
-        k = apply_rotary_emb(k, freqs_cis)
+            q = apply_rotary_emb(q, freqs_cis)
+            k = apply_rotary_emb(k, freqs_cis)
 
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
+            q = q.transpose(1, 2)
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
 
-        kv_mask = None
-        cache_kwargs = {"input_ids": input_ids}
-        if not is_prefill:
-            k, v, kv_mask = self.kv_cache.update_kv(
-                input_pos, k, v, is_prefill, **cache_kwargs
+            kv_mask = None
+            cache_kwargs = {"input_ids": input_ids}
+            if not is_prefill:
+                k, v, kv_mask = self.kv_cache.update_kv(
+                    input_pos, k, v, is_prefill, **cache_kwargs
+                )
+                kv_mask = kv_mask.repeat_interleave(
+                    self.n_head // self.n_local_heads, dim=1
+                )
+
+            k_rep = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
+            v_rep = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
+
+            y, attn = scaled_dot_product_attention(
+                q,
+                k_rep,
+                v_rep,
+                attn_mask=kv_mask if mask is None else mask,
+                dropout_p=0.0,
+                attn_top_k=attn_top_k,
+                # Ask the cache if needs attention scores returned (we cannot use FlexAttention if so)
+                return_attn=self.kv_cache.return_attn(),
             )
-            kv_mask = kv_mask.repeat_interleave(
-                self.n_head // self.n_local_heads, dim=1
-            )
 
-        k_rep = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
-        v_rep = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
+            if (
+                attn is not None
+            ):  # Mean pool over the grouped queries (average over self.n_head // self.n_local_heads)
+                attn = attn.view(
+                    bsz, self.n_local_heads, self.n_head // self.n_local_heads, seqlen, -1
+                ).mean(dim=2)
 
-        y, attn = scaled_dot_product_attention(
-            q,
-            k_rep,
-            v_rep,
-            attn_mask=kv_mask if mask is None else mask,
-            dropout_p=0.0,
-            attn_top_k=attn_top_k,
-            # Ask the cache if needs attention scores returned (we cannot use FlexAttention if so)
-            return_attn=self.kv_cache.return_attn(),
-        )
+            # Prefill updates happen after since we don't use the KV cache for prefill attention
+            if is_prefill:
+                input_pos, k, v, attn = self.compress_prompt(input_pos, k, v, attn)
+                self.kv_cache.update_kv(input_pos, k, v, is_prefill, **cache_kwargs)
 
-        if (
-            attn is not None
-        ):  # Mean pool over the grouped queries (average over self.n_head // self.n_local_heads)
-            attn = attn.view(
-                bsz, self.n_local_heads, self.n_head // self.n_local_heads, seqlen, -1
-            ).mean(dim=2)
+            # [Optional] Update the KV Cache internal state now that we have attention probabilities
+            # This is a no-op for most cache classes
+            self.kv_cache.update_state(input_pos, k, v, is_prefill, attn, **cache_kwargs)
 
-        # Prefill updates happen after since we don't use the KV cache for prefill attention
-        if is_prefill:
-            input_pos, k, v, attn = self.compress_prompt(input_pos, k, v, attn)
-            self.kv_cache.update_kv(input_pos, k, v, is_prefill, **cache_kwargs)
+            y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
-        # [Optional] Update the KV Cache internal state now that we have attention probabilities
-        # This is a no-op for most cache classes
-        self.kv_cache.update_state(input_pos, k, v, is_prefill, attn, **cache_kwargs)
-
-        y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
-
-        y = self.wo(y)
-        return y
+            y = self.wo(y)
+            return y
 
 
 class FeedForward(nn.Module):

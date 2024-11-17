@@ -9,7 +9,6 @@ import argparse
 import torch
 import torch.nn as nn
 
-
 def add_cache_arguments(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("cache_args")
     # KV-Cache Kwargs
@@ -46,6 +45,7 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         "l2",
         "hybrid",
         "keep_it_odd",
+        "lsh",
     ]
     debug_strategies = [f"debug_{strategy}" for strategy in strategies]
     strategies.extend(debug_strategies)
@@ -116,6 +116,14 @@ def add_cache_arguments(parser: argparse.ArgumentParser):
         type=float,
         help="Mininum fraction of recovered attentions (|compressed_attn - uncompressed_attn| < epsilon). The lower the value, the higher the compression.",
     )
+    
+    # LSH, e.g., LSH, specific hyperparameters (--cache_strategy == "lsh")
+    parser.add_argument(
+        "--lsh_dim",
+        default=16,
+        type=int,
+        help="The dimension of the LSH hash.",
+    )
 
 
 def cache_compatibility(args):
@@ -135,6 +143,11 @@ def cache_compatibility(args):
             assert (
                 length == 1.0
             ), f"{cache_strat} cache strategy only supports max_cache_length=1.0."
+            
+        if cache_strat == "lsh":
+            assert (
+                args.lsh_dim > 0
+            ), "LSH dimension must be a positive integer."
 
     print("The cache argument values you provided appear compatible with each other!")
 
@@ -704,7 +717,8 @@ class KVCacheHeavyHitter(KVCacheHeadSpecific):
             attn = attn.squeeze(0).sum(dim=1) / (seq_len - input_pos)
 
         attn = attn.view(1, self.n_heads, -1, 1)
-        attn = (attn >= 1 / self.cache_cts).int() if self.attn_thresholding else attn
+        # attn = (attn >= 1 / self.cache_cts).int() if self.attn_thresholding else attn
+        attn = (attn >= 1 / self.cache_cts) if self.attn_thresholding else attn
 
         # Torch.compile doesn't support dyanmic slicing so we need to zero-pad to full dimension
         padding = max(self.max_cache_length - seq_len, 0)
@@ -1142,14 +1156,15 @@ class KVCacheHybrid(KVCacheHeavyHitter):
 
         # Only build masks as needed
         special_mask = punc_mask = None
-        if self.requires_special:
+        # if self.requires_special:
+        if any(["special" in s["strategy"] for s in self.hybrid_strategies]):
             special_mask = self.build_special_ids_mask(input_ids)
             self.num_special = special_mask.sum()
 
-        if self.requires_punc:
+        # if self.requires_punc:
+        if any(["punc" in s["strategy"] for s in self.hybrid_strategies]):
             punc_mask = self.build_punc_ids_mask(input_ids)
             self.num_punc = punc_mask.sum()
-
         cum_attn = (
             None  # Only aggregate attention if its needed by one of the strategies
         )
@@ -1320,6 +1335,7 @@ class KVCacheAnalysis(KVCacheFull):
             "global_tokens": 0,  # Every token gets saved (no explicit global tokens)
             "max_cache_length": kwargs["max_seq_length"],
             "prompt_compression_strategy": kwargs["prompt_compression_strategy"],
+            "cache_bits": kwargs["cache_bits"],
         }
         super().__init__(max_batch_size, n_heads, head_dim, dtype, **full_kwargs)
 
@@ -1350,7 +1366,8 @@ class KVCacheAnalysis(KVCacheFull):
         self.head_specific = self.compressed.head_specific
 
     def return_attn(self):
-        return self.compressed.return_attn()
+        # return self.compressed.return_attn()
+        return True
 
     def update_kv(self, input_pos, k_val, v_val, is_prefill, **kwargs):
         k, v, mask = super().update_kv(input_pos, k_val, v_val, is_prefill, **kwargs)
@@ -1439,6 +1456,83 @@ class KVCacheKeepItOdd(KVCacheHeadConstant):
         scores[self.pos[:, 0] % 2 == 1] = 1.0
         scores[self.pos[:, 0] >= input_pos - self.recent_window] = float("inf")
         return scores
+    
+
+class KVCacheLSH(KVCacheHeadSpecific):
+    relevant_kwargs = [
+        "max_cache_length",
+        "max_seq_length",
+        "cache_bits",
+        "global_tokens",
+        "recent_window",
+        "lsh_dim" # new parameter for LSH
+    ]
+
+    def __init__(
+        self, max_batch_size, n_heads, head_dim, dtype=torch.bfloat16, **kwargs
+    ):
+        super().__init__(max_batch_size, n_heads, head_dim, dtype, **kwargs)
+
+        key_hash_shape = (max_batch_size, n_heads, self.max_cache_length, self.lsh_dim)
+        self.register_buffer("key_hash", torch.zeros(key_hash_shape, dtype=torch.bool))
+        self.random_proj_matrix = self.random_proj_matrix = torch.randn((head_dim, self.lsh_dim), dtype=dtype)
+
+    def reset(self):
+        super().reset()
+        self.key_hash.zero_()
+
+    def _decoding_update(self, input_pos, k_val, v_val, **kwargs):
+        # Same as KVCacheHeadSpecific, but we also update the LSH hash of the keys for decoding
+        k_val_hash = self._hash_fn(k_val)
+        
+        fill_indices = self._eviction_idx(input_pos, k_val_hash)
+        num_insertions = (
+            (self.pos.gather(2, fill_indices.view(1, -1, 1)).squeeze() == -1)
+            .int()
+            .view(-1)
+        )
+        self._fill(input_pos, k_val, v_val, fill_idxs=fill_indices)
+        
+        self.key_hash.scatter_(2, fill_indices.view(1, -1, 1, 1).expand(1, -1, 1, self.lsh_dim), k_val_hash)
+        
+        return num_insertions
+
+    def _eviction_idx(self, input_pos, k_val_hash):
+        scores = self._token_importances(input_pos, k_val_hash)
+
+        if scores.ndim == 1:
+            scores = scores.unsqueeze(0)
+
+        # Protect global tokens
+        scores[:, : self.global_tokens] = float("inf")
+
+        # Evict unfilled slots (pos == -1)
+        scores.masked_fill_(self.pos.view(scores.shape) == -1, float("-inf"))
+
+        # Evict least important token
+        return torch.argmin(scores, dim=-1)
+
+    def _token_importances(self, input_pos, k_val_hash):
+        # 1. Lowest hamming distances have high importance (- self.hamming_dist)
+        # 2. Lowest score needs to be > -1 : we evict unfilled tokens first (+ max value such that min score is 0)
+        # 3. Save Recent Window (+ inf)
+        # calculate hamming distance between stored hash and key hash
+        hamming_dist = self._hamming_dist(k_val_hash, self.key_hash)
+        return (
+            (hamming_dist.max() - hamming_dist.to(torch.bfloat16))
+            .masked_fill(self.pos >= input_pos - self.recent_window, float("inf"))
+            .squeeze(0)
+        )
+
+    def update_state(self, input_pos, k_val, v_val, is_prefill, attn, **kwargs):
+        if is_prefill: 
+            self.key_hash.copy_(self._hash_fn(self.k_cache))
+
+    def _hash_fn(self, x):
+        return torch.matmul(x, self.random_proj_matrix).sign() >= 0
+    
+    def _hamming_dist(self, x, y):
+        return torch.sum(x != y, dim=-1) # keepdim=False
 
 
 def get_cache_constructor(cache_strategy):
@@ -1457,6 +1551,8 @@ def get_cache_constructor(cache_strategy):
         cls = KVCacheHybrid
     elif cache_strategy == "keep_it_odd":
         cls = KVCacheKeepItOdd
+    elif cache_strategy == "lsh":
+        cls = KVCacheLSH
     elif cache_strategy.startswith("debug"):
         cache_strategy = re.sub(r"debug_+", "", cache_strategy).strip()
         relevant_kwargs = get_cache_constructor(cache_strategy)[1] + [

@@ -1,0 +1,10 @@
+python eval.py --cache_config fastgen --max_cache_length 0.1 --tasks medqa --num_samples 500
+python eval.py --cache_config fastgen --max_cache_length 0.3 --tasks medqa --num_samples 500
+python eval.py --cache_config fastgen --max_cache_length 0.5 --tasks medqa --num_samples 500
+python eval.py --cache_config fastgen --max_cache_length 0.7 --tasks medqa --num_samples 500
+python eval.py --cache_config fastgen --max_cache_length 0.9 --tasks medqa --num_samples 500
+python eval.py --cache_config heavy_hitter --max_cache_length 0.1 --tasks medqa --num_samples 500
+python eval.py --cache_config heavy_hitter --max_cache_length 0.3 --tasks medqa --num_samples 500
+python eval.py --cache_config heavy_hitter --max_cache_length 0.5 --tasks medqa --num_samples 500
+python eval.py --cache_config heavy_hitter --max_cache_length 0.7 --tasks medqa --num_samples 500
+python eval.py --cache_config heavy_hitter --max_cache_length 0.9 --tasks medqa --num_samples 500

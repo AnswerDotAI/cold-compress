@@ -1,0 +1,6 @@
+# Evicts tokens with high L2-Norm key vectors based on
+# https://arxiv.org/abs/2406.11430
+cache_strategy: ["lsh"]
+global_tokens: 4
+recent_window: 10
+lsh_dim: 16

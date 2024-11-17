@@ -5,11 +5,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 
 from metric import AutoMetric
 from tokenizer import get_tokenizer
-
+import json
 
 class EvaluationTask(ABC):
     train_split: str = "train"
@@ -34,6 +34,7 @@ class EvaluationTask(ABC):
         self.tokenizer = tokenizer
         self.hf_args = hf_args
         self.num_samples = kwargs.pop("num_samples", -1)
+        self.random_seed = kwargs.pop("random_seed", 0)
 
         # Download the dataset
         self._download()
@@ -74,6 +75,7 @@ class EvaluationTask(ABC):
                 n = min(self.num_samples, len(filtered_data))
                 print(f"Randomly sample {n} examples")
                 # Use a fixed seed for reproducibility
+                random.seed(self.random_seed)
                 inds = random.Random(n).sample(range(len(filtered_data)), n)
                 filtered_data = filtered_data.select(inds)
 
@@ -628,18 +630,47 @@ class RulerNIAH(EvaluationTask):
 
     def prepare_row(self, row: dict):
         task_input = row["input"]
+        prompt = self.prompt_template.format(task_input=task_input)
+        answer = row["outputs"]  # List[str]
 
-        question = (
-            "The special magic number for fair-sprout mentioned in the provided text is"
+        return {
+            "context": "",
+            "question": "",
+            "prompt": prompt,
+            "labels": answer,
+        }
+        
+class RulerNIAH4K(EvaluationTask):
+    """
+    RULER Multi-keys Needle-in-a-haystack (NIAH) task with 4k context length. (context length can be adjusted as needed)
+    """
+
+    DEFAULT_PROMPT_TEMPLATE = "{task_input}"
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=128, **kwargs
+    ):
+        super().__init__(
+            prompt_template,
+            max_tokens,
+            hf_args=["rbiswasfc/ruler", "niah_multikey_1_4k"],
+            **kwargs,
         )
-        context = task_input
+
+        self.metrics = {
+            "StringMatch": AutoMetric.from_name("ruler-string-match", match_part=False),
+        }
+        self.test_split = "validation"
+
+    def prepare_row(self, row: dict):
+        task_input = row["input"]
 
         prompt = self.prompt_template.format(task_input=task_input)
         answer = row["outputs"]  # List[str]
 
         return {
-            "context": context,
-            "question": question,
+            "context": "",
+            "question": "",
             "prompt": prompt,
             "labels": answer,
         }
@@ -684,6 +715,46 @@ class RulerVT(EvaluationTask):
         }
 
 
+class RulerVT4K(EvaluationTask):
+    """
+    RULER Multi-hop Tracing: Variable Tracking (VT) task with 4k context length. (context length can be adjusted as needed)
+    """
+
+    DEFAULT_PROMPT_TEMPLATE = "{task_input}"
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=30, **kwargs
+    ):
+        super().__init__(
+            prompt_template,
+            max_tokens,
+            hf_args=["rbiswasfc/ruler", "vt_4k"],
+            **kwargs,
+        )
+
+        self.metrics = {
+            "StringMatch": AutoMetric.from_name("ruler-string-match", match_part=False),
+        }
+        self.test_split = "validation"
+
+    def prepare_row(self, row: dict):
+        task_input = row["input"]
+
+        question = task_input.split("Question:")[-1].split("Answer:")[0].strip()
+        context = task_input.split("Question:")[0].strip()
+
+        prompt = self.prompt_template.format(task_input=task_input)
+        answer = row["outputs"]  # List[str]
+
+        return {
+            "context": context,
+            "question": question,
+            "prompt": prompt,
+            "labels": answer,
+        }
+
+
+
 class RulerCWE(EvaluationTask):
     """
     RULER Aggregation: Common Words (CWE) task with 8k context length. (context length can be adjusted as needed)
@@ -698,6 +769,46 @@ class RulerCWE(EvaluationTask):
             prompt_template,
             max_tokens,
             hf_args=["rbiswasfc/ruler", "cwe_8k"],
+            **kwargs,
+        )
+
+        self.metrics = {
+            "StringMatch": AutoMetric.from_name("ruler-string-match", match_part=False),
+        }
+        self.test_split = "validation"
+
+    def prepare_row(self, row: dict):
+        task_input = row["input"]
+
+        question = task_input.split("Question:")[-1].split("Answer:")[0].strip()
+        context = task_input.split("Question:")[0].strip()
+
+        prompt = self.prompt_template.format(task_input=task_input)
+        answer = row["outputs"]  # List[str]
+
+        return {
+            "context": context,
+            "question": question,
+            "prompt": prompt,
+            "labels": answer,
+        }
+
+
+
+class RulerCWE4K(EvaluationTask):
+    """
+    RULER Aggregation: Common Words (CWE) task with 4k context length. (context length can be adjusted as needed)
+    """
+
+    DEFAULT_PROMPT_TEMPLATE = "{task_input}"
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=120, **kwargs
+    ):
+        super().__init__(
+            prompt_template,
+            max_tokens,
+            hf_args=["rbiswasfc/ruler", "cwe_4k"],
             **kwargs,
         )
 
@@ -753,7 +864,306 @@ NOTE: You should only predict the next line in the current file. Do not produce 
             "context": None,
             "labels": ref,
         }
+ 
+    
+class GSM8K(EvaluationTask):
+    """
+    GSM8K (Grade School Math 8K) is a dataset of 8.5K high quality linguistically diverse grade school math word problems. 
+    The dataset was created to support the task of question answering on basic mathematical problems that require multi-step reasoning.
+    """
+    DEFAULT_PROMPT_TEMPLATE = "{question}"
 
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=210, **kwargs
+    ):
+        super().__init__(
+            prompt_template,
+            max_tokens,
+            hf_args=["openai/gsm8k", "main"],
+            **kwargs,
+        )
+
+        self.metrics = {
+            "BertScore": AutoMetric.from_name("bertscore"),
+            "Rouge": AutoMetric.from_name("rouge"),
+            "ChatGPT-Rouge": AutoMetric.from_name("chatgpt-rouge"),
+            "ChatGPTJudge": AutoMetric.from_name("chatgpt-as-a-judge"),
+        }
+        self.validation_split = None
+
+    def prepare_row(self, row: dict):
+        prompt = self.prompt_template.format(question=row['question'])
+        answer = row["answer"]
+
+        return {
+            # "context": None,
+            # "question": None,
+            "prompt": prompt,
+            "labels": answer,
+        }
+
+
+class GSM8K_MC(EvaluationTask):
+    """
+    GSM8K (Grade School Math 8K) is a dataset of 8.5K high quality linguistically diverse grade school math word problems. 
+    The dataset was created to support the task of question answering on basic mathematical problems that require multi-step reasoning.
+    This task is the multiple choice version of GSM8K.
+    """
+    DEFAULT_PROMPT_TEMPLATE = """{question}
+    
+    Choices:
+    A. {choice_A}
+    B. {choice_B}
+    C. {choice_C}
+    D. {choice_D}
+
+    Choose an answer from the choices given. IMPORTANT: Provide only the letter corresponding to your chosen answer. Do not write out the full answer or give any explanation.
+    """
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1, **kwargs
+    ):
+        super().__init__(
+            prompt_template,
+            max_tokens,
+            hf_args=["guipenedo/gsm8k-mc"],
+            **kwargs,
+        )
+
+        self.metrics = {
+            "Accuracy": AutoMetric.from_name("accuracy"),
+            "ExactMatch": AutoMetric.from_name("exact_match"),
+        }
+        self.validation_split = None
+
+    def prepare_row(self, row: dict):
+        choice_a = row["A"]
+        choice_b = row["B"]
+        choice_c = row["C"]
+        choice_d = row["D"]
+        question = row["Question"]
+        answer = row["Answer"]
+        prompt = self.prompt_template.format(question=question, choice_A=choice_a, choice_B=choice_b, choice_C=choice_c, choice_D=choice_d)
+
+        return {
+            "context": None,
+            "question": question,
+            "prompt": prompt,
+            "labels": answer,
+        }
+    
+
+class GSM8KDEBUG(EvaluationTask):
+    """
+    GSM8K (Grade School Math 8K) is a dataset of 8.5K high quality linguistically diverse grade school math word problems. 
+    The dataset was created to support the task of question answering on basic mathematical problems that require multi-step reasoning.
+    """
+    DEFAULT_PROMPT_TEMPLATE = "{question}"
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=210, **kwargs
+    ):
+        super().__init__(
+            prompt_template,
+            max_tokens,
+            hf_args=["openai/gsm8k", "main"],
+            **kwargs,
+        )
+
+        self.metrics = {
+            "BertScore": AutoMetric.from_name("bertscore"),
+            "Rouge": AutoMetric.from_name("rouge"),
+            "ChatGPT-Rouge": AutoMetric.from_name("chatgpt-rouge"),
+            "ChatGPTJudge": AutoMetric.from_name("chatgpt-as-a-judge"),
+        }
+        self.validation_split = None
+    
+    def _download(self):
+        # Can over-write if not using HF
+        self.dataset = load_dataset(*self.hf_args)
+        self.dataset['train'] = self.dataset['train'].select(range(100))
+        self.dataset['test'] = self.dataset['test'].select(range(20))
+
+    def prepare_row(self, row: dict):
+        prompt = self.prompt_template.format(question=row['question'])
+        answer = row["answer"]
+
+        return {
+            # "context": None,
+            # "question": None,
+            "prompt": prompt,
+            "labels": answer,
+        }
+
+
+
+class MEDQA(EvaluationTask):
+    DEFAULT_PROMPT_TEMPLATE = """{system}
+
+====QUESTION====
+{question}
+"""
+
+    def __init__(self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1, **kwargs):
+        super().__init__(
+            prompt_template,
+            max_tokens,
+            hf_args=None,
+            **kwargs,
+        )
+
+        self.test_split = "test"
+        self.test_split = "test"
+
+        self.metrics = {
+            "BertScore": AutoMetric.from_name("bertscore"),
+            "Rouge": AutoMetric.from_name("rouge"),
+            "ChatGPT-Rouge": AutoMetric.from_name("chatgpt-rouge"),
+            "ChatGPTJudge": AutoMetric.from_name("chatgpt-as-a-judge"),
+        }
+
+    def _download(self):
+        self.json_path = Path(__file__).parent / "data" / "medqa.json"
+        data_files = {'test': [str(self.json_path)]}
+        self.dataset = load_dataset("json", data_files=data_files, split="test")
+        self.dataset = self.dataset.train_test_split(test_size=0.1, seed=42)
+
+    def prepare_row(self, row: dict):
+        system = row["system"]
+        question = row["question"]
+        answer = row["answer"]
+        prompt = self.prompt_template.format(system=system, question=question)
+
+        return {
+            "prompt": prompt,
+            "question": question,
+            "labels": answer,
+        }
+        
+
+
+class MEDQA_MC(EvaluationTask):
+    DEFAULT_PROMPT_TEMPLATE = """You are a expert medical professional specializing in diagnosing and recommending treatments for various conditions. Carefully assess the patient's symptoms, medical history, and clinical details to determine the most appropriate treatment. Choose an answer from the choices given in the question. IMPORTANT: Provide only the letter corresponding to your chosen answer. Do not write out the full answer or give any explanation.
+    
+====QUESTION====
+{question}
+"""
+
+    def __init__(self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=1, **kwargs):
+        super().__init__(
+            prompt_template,
+            max_tokens,
+            hf_args=None,
+            **kwargs,
+        )
+
+        self.test_split = "test"
+
+        self.metrics = {
+            "Accuracy": AutoMetric.from_name("accuracy"),
+        }
+    
+    def _download(self):
+        self.json_path = Path(__file__).parent / "data" / "medqa.json"
+        data_files = {'test': [str(self.json_path)]}
+        self.dataset = load_dataset("json", data_files=data_files, split="test")
+        self.dataset = self.dataset.train_test_split(test_size=0.1, seed=42)
+       
+    def prepare_row(self, row: dict):
+        system = row["system"]
+        question = row["question"]
+        label = row["label"]
+        prompt = self.prompt_template.format(system=system, question=question)
+
+        return {
+            "prompt": prompt,
+            "question": question,
+            "labels": label,
+        }
+    
+      
+class PasskeyRetrieval(EvaluationTask):
+    """
+    LLama3 1024 pass key retrieval eval task
+    """
+    DEFAULT_PROMPT_TEMPLATE = "{task_input}"
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=100, **kwargs
+    ):
+        super().__init__(
+            prompt_template,
+            max_tokens,
+            hf_args=["nanotron/llama3-1024-passkey-retrieval-eval"],
+            **kwargs,
+        )
+
+        self.metrics = {
+            "StringMatch": AutoMetric.from_name("ruler-string-match", match_part=False),
+        }
+        self.test_split = "train"
+
+    def prepare_row(self, row: dict):
+        task_input = row["prompt"]
+
+        prompt = self.prompt_template.format(task_input=task_input)
+        answer = row["answer"]  # List[str]
+
+        return {
+            "context": "",
+            "question": "",
+            "prompt": prompt,
+            "labels": str(answer),
+        }
+
+
+class PassageRetrieval(EvaluationTask):
+    """
+    LongBench passage retrieval eval task
+    """
+    DEFAULT_PROMPT_TEMPLATE = """Given 30 English Wikipedia paragraphs numbered from 1 to 30, please determine which paragraph the given summary corresponds to. 
+====QUESTION====
+
+{context}
+    
+====Summary====
+
+{task_input}
+
+Please provide the paragraph number that best matches the summary in the format "Paragraph X".
+"""
+
+    def __init__(
+        self, prompt_template=DEFAULT_PROMPT_TEMPLATE, max_tokens=5, **kwargs
+    ):
+        super().__init__(
+            prompt_template,
+            max_tokens,
+            hf_args=["THUDM/LongBench", "passage_retrieval_en"],
+            **kwargs,
+        )
+
+        self.metrics = {
+            "Accuracy": AutoMetric.from_name("accuracy"),
+            "ExactMatch": AutoMetric.from_name("exact_match"),
+            "StringMatch": AutoMetric.from_name("ruler-string-match", match_part=False),
+        }
+        self.test_split = "test"
+        
+    def prepare_row(self, row: dict):
+        task_input = row["input"]
+        context = row["context"]
+
+        prompt = self.prompt_template.format(task_input=task_input, context=context)
+        answer = row["answers"][0]
+
+        return {
+            "context": context,
+            "question": task_input,
+            "prompt": prompt,
+            "labels": answer,
+        }
+    
 
 TASK_MAPPING = {
     "dolomites": Dolomites,
@@ -762,13 +1172,20 @@ TASK_MAPPING = {
     "qmsum": QMSum,
     "repobench": RepoBench,
     "rulerqa": RulerQA,
-    "rulerniah": RulerNIAH,
-    "rulervt": RulerVT,
-    "rulercwe": RulerCWE,
+    "rulerniah": RulerNIAH4K,
+    "rulervt": RulerVT4K,
+    "rulercwe": RulerCWE4K,
     "scrollsquality": ScrollsQuality,
     "squality": Squality,
     "triviaqa": TriviaQA,
     "truthfulqa": TruthfulQA,
+    "gsm": GSM8K,
+    "gsm_debug": GSM8KDEBUG,
+    "gsm_mc": GSM8K_MC,
+    "medqa": MEDQA,
+    "medqa_mc": MEDQA_MC,
+    "passkey": PasskeyRetrieval,
+    "passage": PassageRetrieval,
 }
 
 

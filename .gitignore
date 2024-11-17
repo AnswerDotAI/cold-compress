@@ -3,9 +3,11 @@ __pycache__
 .DS_Store
 *.egg-info
 build
+.venv/
+slurm-*.out
+slurm_logs/
 
 # data
-data
 checkpoints
 out
 !data/shakespeare/prepare.py
@@ -19,3 +21,8 @@ original_adapter.py
 
 torch_compile_debug
 results
+submit.sh
+submit*.sh
+
+.env
+.cache/
